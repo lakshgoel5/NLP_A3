@@ -11,3 +11,9 @@ conda activate skylake_env_2
 cd /home/cse/btech/cs1230848/NLP_A3
 
 cd Q1
+./train.sh ./output
+
+# Inference (one per language)
+./infer.sh en /path/to/test_en.jsonl ./output
+./infer.sh hi /path/to/test_hi.jsonl ./output
+./infer.sh kn /path/to/test_kn.jsonl ./output

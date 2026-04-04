@@ -53,12 +53,34 @@ python eval.py sample_prediction.jsonl sample_reference.jsonl
 - Training: 480 minutes i.e. 8hrs
 - Inference: per test file i.e. 500 samples: 30 minutes
 
+## Allowed Libraries
+
+| Library | Purpose |
+|---------|---------|
+| PyTorch | Core deep learning |
+| HuggingFace Transformers | Load models, tokenizers |
+| HuggingFace PEFT | LoRA adapters |
+| vllm | Fast inference for Q3 |
+| FAISS | Vector similarity search (likely for retrieval in Q2/Q3) |
+| NumPy, scikit-learn | Data processing, metrics |
+
+## Not Allowed
+
+| Restriction | Implication |
+|-------------|-------------|
+| No pre-trained RE models | Can't use models already trained on relation extraction datasets |
+| Only given data | No external datasets, no scraping |
+| No translation at inference | Can't translate Hindi/Kannada sentences to English before predicting |
+
 ## Methodology
 
 If no relation holds predict NA.
 NA not counted in F1 scores.
 
 Training files also have Named Entity Recognition data
+
+Q1 & Q2 use a smaller 1.5B model, suitable for fine-tuning with a classification head
+Q3 uses a larger 8B instruct model, no fine-tuning, just inference via vllm
 
 ### Micro F1
 **Intuition:** Pool all predictions together, then compute one global F1.
@@ -90,3 +112,42 @@ Macro-F1                     = 0.63  ← rare class drags it down!
 
 Evaluation script ignores extra pairs. Only GT pairs are scored. \
 So model is penalized for missing pairs but not rewarded for inventing extra ones — which discourages hallucination.
+
+# Task 1
+Qwen is a decoder-only transformer (like GPT) made by Alibaba. The 1.5B version has 1.5 billion parameters. "Decoder-only" means it reads left to right and predicts the next token.
+It is trained on massive multilingual web text — including Hindi, Kannada, and other Indian languages \
+
+When you feed it a sentence, it produces hidden states — one vector per token:
+
+```
+Input:  "[E1] India [/E1] contains [E2] Hyderabad [/E2]"
+         tok1  tok2  tok3   tok4    tok5    tok6    tok7
+
+Hidden states (from last layer):
+         h1    h2    h3     h4      h5      h6      h7
+         
+Each h = vector of size 1536 (Qwen2.5-1.5B hidden dim)
+```
+
+## What vector do you feed into the classifier?
+### Option A
+Use h_last and feed to classifier. \
+**Problem**: the last token represents the whole sentence, not specifically about E1 and E2. It loses entity-specific info.
+
+### Option B
+Concatenate E1 and E2 token states. \
+Why this works: by the time the model processes [E1], it has attended to everything before it (the sentence context). So h_[E1] encodes "what E1 means in this sentence". Same for E2. Concatenating both gives the classifier:
+
+- Info about E1 in context
+- Info about E2 in context
+- Implicitly, the relationship between them
+
+### Option C
+Concatenate all four boundary tokens.
+
+```
+[h_[E1] | h_[/E1] | h_[E2] | h_[/E2]] → classifier
+```
+
+This captures both the start and end context of each entity span.
+
