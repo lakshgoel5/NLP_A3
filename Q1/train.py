@@ -3,10 +3,41 @@ import json
 import argparse
 import torch
 
-from dataset import build_label_map, NUM_CLASSES, RDataset
-from model import load_base_model, lora
+from dataset import build_label_map, NUM_CLASSES, RDataset, collate_fn
+from model import load_base_model, lora, RelationClassifier
 
 from transformers import get_cosine_schedule_with_warmup
+
+def compute_metrics(all_true, all_pred, id2label):
+    na_id = {v: k for k, v in id2label.items()}["NA"]  # get NA's integer id
+    labels = [i for i in id2label if i != na_id]
+    macro = f1_score(all_true, all_pred, labels=labels, average="macro", zero_division=0)
+    micro = f1_score(all_true, all_pred, labels=labels, average="micro", zero_division=0)
+    return macro, micro
+
+
+def evaluate(model, loader, device, id2label):
+    model.eval()
+    all_true, all_pred = [], []
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Evaluating", leave=False):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            e1_pos = batch["e1_pos"].to(device)
+            e1c_pos = batch["e1c_pos"].to(device)
+            e2_pos = batch["e2_pos"].to(device)
+            e2c_pos = batch["e2c_pos"].to(device)
+            labels = batch["labels"]
+
+            with autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
+                logits = model(input_ids, attention_mask, e1_pos, e1c_pos, e2_pos, e2c_pos)
+
+            preds = logits.argmax(dim=-1).cpu().tolist()
+            all_true.extend(labels.tolist())
+            all_pred.extend(preds)
+
+    macro, micro = compute_metrics(all_true, all_pred, id2label)
+    return macro, micro
 
 
 # Evaluated on English, Hindi, Kannada NYT-10 test set
@@ -37,6 +68,7 @@ def main():
     max_len = config["max_len"]
     weight_decay = config.get("weight_decay", 0.01)
     accumulation = config.get("accumulation_steps", 1)
+    entity_repr = config["entity_repr"]
 
     warmup_ratio = config["warmup_ratio"]
 
@@ -54,6 +86,7 @@ def main():
     ]
 
     train_files = [f for f in file_paths if os.path.isfile(f)]
+    val_files = [f for f in val_file_path if os.path.isfile(f)]
     train_maps = [f for f in map_paths if os.path.isfile(f)]
     print(f"Training files: {train_files}\n")
     print(f"Training maps: {train_maps}\n")
@@ -66,10 +99,18 @@ def main():
     tokenizer, base_model = load_base_model()
     base_model = lora(base_model, config["lora_rank"], config["lora_alpha"], config["lora_dropout"])
 
+    # I need to add extra layer of classifier above base model, and make my forward function accept extra tokens
+    model = RelationClassifier(base_model, base_model.config.hidden_size, num_classes, entity_repr)
+    model = model.to(device)
     #-------dataset--------
     # A DataLoader requires an object that follows a specific protocol (the Dataset) so it knows:
     # How many items exist in total?
     # How do I grab exactly one item?
+
+    pad_id = tokenizer.pad_token_id
+
+    collate_function = partial(collate_fn, pad_id=tokenizer.pad_token_id)
+
     train_dataset=RDataset(
         file_paths=train_files,
         tokenizer=tokenizer,
@@ -86,6 +127,24 @@ def main():
         num_workers=4,
         pin_memory=True,
     )
+
+    val_dataset = RDataset(
+        file_paths=val_files,
+        tokenizer=tokenizer,
+        label2id=label2id,
+        map_paths=None,
+        max_len=max_len,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size * 2,
+        shuffle=False,
+        collate_fn=collate_function,
+        num_workers=4,
+        pin_memory=True,
+    )
+    
 
     # ------loss------
     loss_function = nn.CrossEntropyLoss() #DESIGN: could use FocalLoss
@@ -178,12 +237,17 @@ def main():
 
         avg_loss = total_loss / len(train_loader)
 
-        
-        
+        macro_f1, micro_f1 = evaluate(model, val_loader, device, id2label)
+        print(f"\nEpoch {epoch}/{epochs} | Train Loss: {avg_loss:.4f} | Val Macro-F1: {macro_f1:.4f} | Val Micro-F1: {micro_f1:.4f}")
 
+        if macro_f1 > best_macro_f1:
+            best_macro_f1 = macro_f1
 
+            checkpoint_path = os.path.join(args.output_dir)
+            model.save_pretrained(checkpoint_path)
+            tokenizer.save_pretrained(checkpoint_path)
 
-
+            torch.save(model.classifier.state_dict(), os.path.join(args.output_dir, "classifier_head.pt"))
 
 if __name__ == "__main__":
     main()
