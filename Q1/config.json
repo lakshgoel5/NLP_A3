@@ -11,5 +11,7 @@
     
     "warmup_ratio": 0.1,
 
-    "entity_repr": "concat_four"
+    "entity_repr": "concat_four",
+
+    "max_len": 256
 }

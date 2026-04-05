@@ -1,12 +1,18 @@
 import os
 import json
 import argparse
+from functools import partial
+
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.amp import GradScaler, autocast
+from tqdm import tqdm
+from sklearn.metrics import f1_score
+from transformers import AdamW, get_cosine_schedule_with_warmup
 
 from dataset import build_label_map, NUM_CLASSES, RDataset, collate_fn
 from model import load_base_model, lora, RelationClassifier
-
-from transformers import get_cosine_schedule_with_warmup
 
 def compute_metrics(all_true, all_pred, id2label):
     na_id = {v: k for k, v in id2label.items()}["NA"]  # get NA's integer id
@@ -64,7 +70,7 @@ def main():
     #----------Hyperparameters-----------
     epochs = config["epochs"]
     batch_size = config["batch_size"]
-    lr = config["learning_rate"]
+    lr = config["lr"]
     max_len = config["max_len"]
     weight_decay = config.get("weight_decay", 0.01)
     accumulation = config.get("accumulation_steps", 1)
@@ -78,7 +84,7 @@ def main():
         "../sft_dataset/hi_train.jsonl",
         "../sft_dataset/kn_train.jsonl",
     ]
-    val_file_path = "../en_sft_dataset/valid.jsonl"
+    val_file_path = ["../en_sft_dataset/valid.jsonl",]
 
     map_paths = [
         "../sft_dataset/hi_map.json",
@@ -116,7 +122,7 @@ def main():
         tokenizer=tokenizer,
         label2id=label2id,
         map_paths=train_maps,
-        max_len=max_len,
+        max_length=max_len,
     )
 
     train_loader=DataLoader(
@@ -133,7 +139,7 @@ def main():
         tokenizer=tokenizer,
         label2id=label2id,
         map_paths=None,
-        max_len=max_len,
+        max_length=max_len,
     )
 
     val_loader = DataLoader(
@@ -153,7 +159,7 @@ def main():
     #DEISGN separate learning rates
 
     # The classifier head is usually randomly initialized. It is "dumb" at the start, while BERT is already "smart." By giving the classifier a 5x higher learning rate, you allow it to catch up and learn the specific task quickly without waiting for the slow-moving LoRA weights.
-    classifier_params = list(module.classifier.parameters())
+    classifier_params = list(model.classifier.parameters())
     lora_params = [p for n, p in model.named_parameters() if p.requires_grad and "classifier" not in n]
     # In LoRA, most of the model (the original BERT/LLM weights) is frozen (requires_grad=False). This filter ensures we only grab the new LoRA weights you've added.
 
@@ -171,7 +177,7 @@ def main():
     scaler = GradScaler("cpu", enabled=False) if device.type not in ("cuda",) else GradScaler("cuda")
 
     # ---------Scheduler----------
-    total_steps = (len(train_loader) // grad_accum) * epochs
+    total_steps = (len(train_loader) // accumulation) * epochs
     warmup_steps = int(total_steps * warmup_ratio)
 
     #DESIGN alternatives: linear, polynomial, constant-with-warmup
@@ -208,9 +214,9 @@ def main():
                 loss_val = loss_function(logits, labels)
                 loss_val = loss_val / accumulation
             
-            scaler.scale(loss).backward() #multiply by a big number
+            scaler.scale(loss_val).backward() #multiply by a big number
 
-            if step % grad_accum == 0:
+            if step % accumulation == 0:
                 # We must bring the gradients back to their real size before we look at them.
                 scaler.unscale_(optimizer)
 
@@ -232,7 +238,7 @@ def main():
                 # This resets the gradients to zero so they don't accumulate from the previous batch.
                 optimizer.zero_grad()
 
-            total_loss += loss.item() * accumulation
+            total_loss += loss_val.item() * accumulation
             pbar.set_postfix(loss=f"{total_loss / step:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
 
         avg_loss = total_loss / len(train_loader)
@@ -244,7 +250,7 @@ def main():
             best_macro_f1 = macro_f1
 
             checkpoint_path = os.path.join(args.output_dir)
-            model.save_pretrained(checkpoint_path)
+            model.base_model.save_pretrained(checkpoint_path)
             tokenizer.save_pretrained(checkpoint_path)
 
             torch.save(model.classifier.state_dict(), os.path.join(args.output_dir, "classifier_head.pt"))

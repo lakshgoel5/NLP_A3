@@ -75,7 +75,7 @@ class RelationClassifier(nn.Module):
 
         batch_size = hidden_states.shape[0]
 
-        batch_vector = torch.arange(batch_size)
+        batch_vector = torch.arange(batch_size, device=hidden_states.device)
 
         # hidden_states is 3D tensor of dim (B, seq_len, 1536)
         # each token's hidden state has attended to every other token through self-attention
