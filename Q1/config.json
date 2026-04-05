@@ -1,0 +1,9 @@
+{
+    "epochs": 10,
+    "batch_size": 16,
+    "lr": 2e-4,
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "warmup_ratio": 0.1,
+    "lora_dropout": 0.0
+}
