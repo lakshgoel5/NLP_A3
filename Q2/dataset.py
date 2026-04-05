@@ -39,20 +39,14 @@ def build_label_map():
     return label2id, id2label
 
 
-class RelationDataset(Dataset):
-    def __init__(self, file_paths, tokenizer, label2id, map_paths=None, max_length=256):
+class SFTDataset(Dataset):
+    def __init__(self, file_paths, tokenizer, max_length=256):
         self.tokenizer = tokenizer
-        self.label2id = label2id
         self.max_length = max_length
         self.examples = []
-        self.load_data(file_paths, map_paths)
+        self.load_data(file_paths)
 
-    def load_data(self, file_paths, map_paths):
-        e1_id = self.tokenizer.convert_tokens_to_ids("[E1]")
-        e1_end_id = self.tokenizer.convert_tokens_to_ids("[/E1]")
-        e2_id = self.tokenizer.convert_tokens_to_ids("[E2]")
-        e2_end_id = self.tokenizer.convert_tokens_to_ids("[/E2]")
-
+    def load_data(self, file_paths):
         file_to_invmap = {}
         if map_paths:
             for map_path in map_paths:
@@ -90,7 +84,7 @@ class RelationDataset(Dataset):
                             continue
                         label_id = self.label2id[raw_label]
 
-                        marked = self.mark_entities(sent, em1, em2) # This function will add special tokens around the entities
+                        marked = self.make_prompt(sent, em1, em2) # This function will make prompt for model
                         if marked is None:
                             skipped += 1
                             continue
@@ -105,23 +99,9 @@ class RelationDataset(Dataset):
                         # output is a dictionary with keys "input_ids" and "attention_mask"
                         ids = enc["input_ids"]
 
-                        # Locate special token positions
-                        e1_pos = self.find_token_position(ids, e1_id)
-                        e1_end_pos = self.find_token_position(ids, e1_end_id)
-                        e2_pos = self.find_token_position(ids, e2_id)
-                        e2_end_pos = self.find_token_position(ids, e2_end_id)
-
-                        if e1_pos is None or e1_end_pos is None or e2_pos is None or e2_end_pos is None:
-                            skipped += 1
-                            continue
-
                         self.examples.append({
                             "input_ids": torch.tensor(ids, dtype=torch.long), #for whole numbers used as INDICES
                             "attention_mask": torch.tensor(enc["attention_mask"], dtype=torch.long), #for whole numbers used as INDICES
-                            "e1_pos": e1_pos,
-                            "e1_end_pos": e1_end_pos,
-                            "e2_pos": e2_pos,
-                            "e2_end_pos": e2_end_pos,
                             "label": label_id,
                         })
 
@@ -139,29 +119,13 @@ class RelationDataset(Dataset):
         except ValueError:
             return None
     
-    def mark_entities(self, sent_text, em1, em2):
-        pos1 = sent_text.find(em1) # searches the string for substring and returns the character index of its first occurrence.
-        pos2 = sent_text.find(em2)
-
-        if pos1 == -1 or pos2 == -1:
-            return None
-
-        # Build a list of (start, end, open_tag, close_tag) sorted right-to-left
-        spans = [
-            (pos1, pos1 + len(em1), "[E1]", "[/E1]"),
-            (pos2, pos2 + len(em2), "[E2]", "[/E2]"),
-        ]
-
-        # Sort spans by start position in descending order
-        spans.sort(key=lambda x: x[0], reverse=True)
-
-        # Insert tags into the sentence
-        marked_sent = sent_text
-        for start, end, open_tag, close_tag in spans:
-            marked_sent = marked_sent[:start] + open_tag + marked_sent[start:end] + close_tag + marked_sent[end:]
-
-        return marked_sent
-
+    def make_prompt(self, sent_text, em1, em2):
+        return (
+            f'Entity 1: {em1}\n'
+            f'Entity 2: {em2}\n'
+            f'Sentence: {sent_text}\n'
+            f'Relation: '
+        )
 
 def collate_fn(batch, pad_id):
     max_len = max(x["input_ids"].size(0) for x in batch)

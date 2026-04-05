@@ -1,17 +1,15 @@
 {
-    "epochs": 10,
-    "batch_size": 16,
+    "model_name": "Qwen/Qwen2.5-1.5B",
+    "epochs": 3,
+    "batch_size": 8,
     "lr": 2e-4,
     "weight_decay": 0.01,
-    "accumulation_steps": 2,
-
+    "accumulation_steps": 4,
+    "max_len": 256,
+    "max_new_tokens": 32,
     "lora_rank": 16,
     "lora_alpha": 32,
-    "lora_dropout": 0.0,
-    
-    "warmup_ratio": 0.1,
-
-    "entity_repr": "concat_four",
-
-    "max_len": 256
+    "lora_dropout": 0.05,
+    "warmup_ratio": 0.05,
+    "indic_repeat": 5
 }

@@ -83,12 +83,16 @@ def main():
         "../en_sft_dataset/train.jsonl",
         "../sft_dataset/hi_train.jsonl",
         "../sft_dataset/kn_train.jsonl",
+        "../sft_dataset/or_train.jsonl",
+        "../sft_dataset/tcy_val.jsonl",
     ]
     val_file_path = ["../en_sft_dataset/valid.jsonl",]
 
     map_paths = [
         "../sft_dataset/hi_map.json",
         "../sft_dataset/kn_map.json",
+        "../sft_dataset/or_map.json",
+        "../sft_dataset/tcy_map.json",
     ]
 
     train_files = [f for f in file_paths if os.path.isfile(f)]
@@ -103,10 +107,10 @@ def main():
 
     #--------model-------
     tokenizer, base_model = load_base_model()
-    base_model = lora(base_model, config["lora_rank"], config["lora_alpha"], config["lora_dropout"])
+    # this is only model now
+    model = lora(base_model, config["lora_rank"], config["lora_alpha"], config["lora_dropout"])
 
-    # I need to add extra layer of classifier above base model, and make my forward function accept extra tokens
-    model = RelationClassifier(base_model, base_model.config.hidden_size, num_classes, entity_repr)
+    # Removed relational classifier class
     model = model.to(device)
     #-------dataset--------
     # A DataLoader requires an object that follows a specific protocol (the Dataset) so it knows:
@@ -117,11 +121,9 @@ def main():
 
     collate_function = partial(collate_fn, pad_id=tokenizer.pad_token_id)
 
-    train_dataset=RDataset(
+    train_dataset=SFTDataset(
         file_paths=train_files,
         tokenizer=tokenizer,
-        label2id=label2id,
-        map_paths=train_maps,
         max_length=max_len,
     )
 
@@ -134,11 +136,9 @@ def main():
         pin_memory=True,
     )
 
-    val_dataset = RDataset(
+    val_dataset = SFTDataset(
         file_paths=val_files,
         tokenizer=tokenizer,
-        label2id=label2id,
-        map_paths=None,
         max_length=max_len,
     )
 
@@ -153,25 +153,10 @@ def main():
     
 
     # ------loss------
-    loss_function = nn.CrossEntropyLoss() #DESIGN: could use FocalLoss
+    # Internally, the model calculates the loss for every token (including padding tokens) and then masks out the padding tokens before averaging. 
 
     # ---------Optimiser---------
-    #DEISGN separate learning rates
-
-    # The classifier head is usually randomly initialized. It is "dumb" at the start, while BERT is already "smart." By giving the classifier a 5x higher learning rate, you allow it to catch up and learn the specific task quickly without waiting for the slow-moving LoRA weights.
-    classifier_params = list(model.classifier.parameters())
-    lora_params = [p for n, p in model.named_parameters() if p.requires_grad and "classifier" not in n]
-    # In LoRA, most of the model (the original BERT/LLM weights) is frozen (requires_grad=False). This filter ensures we only grab the new LoRA weights you've added.
-
-    groups = [
-        {"params": lora_params, "lr": lr},
-        {"params": classifier_params, "lr": lr * 5}, #DESIGN HYPERPARAMETER
-    ]
-
-    # admW mathematically separates the weight decay from the gradient updates, which helps the model generalize much better.
-    # Groups: different rules for different layers
-    # weight decay: penalty for being too complex. It prevents any single weight from becoming too large and "dominating" the logic. Large weights are a sign that the model is memorizing specific training examples (overfitting) rather than learning general patterns.
-    optimizer = AdamW(groups, weight_decay=weight_decay)
+    optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=weight_decay)
 
     #-----scaler for float16 error------
     scaler = GradScaler("cpu", enabled=False) if device.type not in ("cuda",) else GradScaler("cuda")
@@ -186,7 +171,6 @@ def main():
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
-        num_cycles=0.5,
     )
 
     # ---------train------------
@@ -203,16 +187,11 @@ def main():
         for step, batch in enumerate(pbar, 1):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            e1_pos = batch["e1_pos"].to(device)
-            e1_end_pos = batch["e1_end_pos"].to(device)
-            e2_pos = batch["e2_pos"].to(device)
-            e2_end_pos = batch["e2_end_pos"].to(device)
             labels = batch["labels"].to(device)
 
             with autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
-                logits = model(input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos)
-                loss_val = loss_function(logits, labels)
-                loss_val = loss_val / accumulation
+                logits = model(input_ids, attention_mask, labels)
+                loss_val = logits.loss / accumulation
             
             scaler.scale(loss_val).backward() #multiply by a big number
 
@@ -250,10 +229,8 @@ def main():
             best_macro_f1 = macro_f1
 
             checkpoint_path = os.path.join(args.output_dir)
-            model.base_model.save_pretrained(checkpoint_path)
+            model.save_pretrained(checkpoint_path)
             tokenizer.save_pretrained(checkpoint_path)
-
-            torch.save(model.classifier.state_dict(), os.path.join(args.output_dir, "classifier_head.pt"))
 
 if __name__ == "__main__":
     main()
