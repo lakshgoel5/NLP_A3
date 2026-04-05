@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer
 from peft import get_peft_model, LoraConfig, TaskType
 
 SPECIAL_TOKENS = ["[E1]", "[/E1]", "[E2]", "[/E2]"]
@@ -21,14 +21,10 @@ def load_base_model():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Auto" means HuggingFace figures out the right model class from the model name. "ForCausalLM" means it's a decoder-only language model (predicts next token).
-    model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModel.from_pretrained(
         model_name,
         dtype=torch.float16, # save memory # DESIGN (bfloat16 might be stable on A100)
     )
-    
-    # output_hidden_states must be set on the config, NOT passed to from_pretrained
-    model.config.output_hidden_states = True
 
     # Resize embeddings for new tokens
     model.resize_token_embeddings(len(tokenizer))
@@ -51,3 +47,64 @@ def lora(model, lora_rank, lora_alpha, lora_dropout):
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     return model
+
+class RelationClassifier(nn.Module):
+    def __init__(self, base_model, vector_dim, num_classes, entity_repr):
+        super().__init__()
+        self.base_model = base_model
+        self.vector_dim = vector_dim
+        self.num_classes = num_classes
+        self.entity_repr = entity_repr
+
+        if entity_repr == "concat_four":
+            self.classifier = nn.Linear(4 * vector_dim, num_classes)
+        elif entity_repr == "concat_two":
+            self.classifier = nn.Linear(2 * vector_dim, num_classes)
+        elif entity_repr == "mean_four":
+            self.classifier = nn.Linear(vector_dim, num_classes)
+        elif entity_repr == "mean_two":
+            self.classifier = nn.Linear(vector_dim, num_classes)
+        elif entity_repr == "last_token":
+            self.classifier = nn.Linear(vector_dim, num_classes)
+        else:
+            raise ValueError("Invalid entity_repr")
+
+    def forward(self, input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos):
+        outputs = self.base_model(input_ids, attention_mask)
+        hidden_states = outputs.last_hidden_state  #DESIGN: try outputs.hidden_states[-2] (second-to-last) or average last N layers
+
+        batch_size = hidden_states.shape[0]
+
+        batch_vector = torch.arange(batch_size)
+
+        # hidden_states is 3D tensor of dim (B, seq_len, 1536)
+        # each token's hidden state has attended to every other token through self-attention
+
+        if self.entity_repr == "concat_four":
+            e1_repr  = hidden_states[batch_vector, e1_pos] #(B, 1536)
+            e1_end_repr = hidden_states[batch_vector, e1_end_pos]
+            e2_repr  = hidden_states[batch_vector, e2_pos]
+            e2_end_repr = hidden_states[batch_vector, e2_end_pos]
+            combined = torch.cat([e1_repr, e1_end_repr, e2_repr, e2_end_repr], dim=-1)
+        elif self.entity_repr == "concat_two":
+            e1_repr  = hidden_states[batch_vector, e1_pos]
+            e2_repr  = hidden_states[batch_vector, e2_pos]
+            combined = torch.cat([e1_repr, e2_repr], dim=-1)
+        elif self.entity_repr == "mean_four":
+            e1_repr  = hidden_states[batch_vector, e1_pos]
+            e1_end_repr = hidden_states[batch_vector, e1_end_pos]
+            e2_repr  = hidden_states[batch_vector, e2_pos]
+            e2_end_repr = hidden_states[batch_vector, e2_end_pos]
+            combined = (e1_repr + e1_end_repr + e2_repr + e2_end_repr) / 4
+        elif self.entity_repr == "mean_two":
+            e1_repr  = hidden_states[batch_vector, e1_pos]
+            e2_repr  = hidden_states[batch_vector, e2_pos]
+            combined = (e1_repr + e2_repr) / 2
+        elif self.entity_repr == "last_token":
+            seq_lens = attention_mask.sum(dim=1) - 1
+            combined = hidden_states[batch_vector, seq_lens]
+        else:
+            raise ValueError("Invalid entity_repr")
+
+        logits = self.classifier(combined)
+        return logits
