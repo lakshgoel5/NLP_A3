@@ -1,3 +1,4 @@
+import os
 import json
 import torch
 from torch.utils.data import Dataset
@@ -40,72 +41,85 @@ def build_label_map():
 
 
 class SFTDataset(Dataset):
-    def __init__(self, file_paths, tokenizer, max_length=256):
+    def __init__(self, file_paths, tokenizer, max_length=256, map_paths=None, indic_repeat=1):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.label2id, self.id2label = build_label_map()
         self.examples = []
-        self.load_data(file_paths)
+        self.load_data(file_paths, map_paths or [], indic_repeat)
 
-    def load_data(self, file_paths):
+    def load_data(self, file_paths, map_paths, indic_repeat=1):
+        # Build inverse maps: indic label -> English label, keyed by file path
         file_to_invmap = {}
-        if map_paths:
-            for map_path in map_paths:
-                with open(map_path, "r", encoding="utf-8") as f:
-                    forward_map = json.load(f)
-                    inv = {v: k for k, v in forward_map.items()}
-                    lang_code = map_path.split("/")[-1].split("_")[0] #DEBUG: Hardcoaded name of langauge
-                    for fp in file_paths:
-                        if lang_code in fp:
-                            file_to_invmap[fp] = inv
+        for map_path in map_paths:
+            with open(map_path, "r", encoding="utf-8") as f:
+                forward_map = json.load(f)
+            inv = {v: k for k, v in forward_map.items()}
+            lang_code = os.path.basename(map_path).split("_")[0]
+            for fp in file_paths:
+                if lang_code in os.path.basename(fp):
+                    file_to_invmap[fp] = inv
 
         skipped = 0
         for file_path in file_paths:
             inv_map = file_to_invmap.get(file_path, None)
-            
+            repeat = indic_repeat if inv_map is not None else 1
+
+            file_examples = []
             with open(file_path, "r", encoding="utf-8") as f:
-                for line in tqdm(f, desc=file_path.split("/")[-1], leave=False):
+                for line in tqdm(f, desc=os.path.basename(file_path), leave=False):
                     line = line.strip()
                     if not line:
                         continue
 
-                    data = json.loads(line) # This converts the JSON-formatted string into a Python dictionary
+                    data = json.loads(line)
                     sent = data["sentText"]
                     for rm in data.get("relationMentions", []):
                         em1 = rm["em1Text"]
                         em2 = rm["em2Text"]
                         raw_label = rm["label"]
 
+                        # Convert indic label to English using inverse map
                         if inv_map is not None:
                             raw_label = inv_map.get(raw_label, raw_label)
 
                         if raw_label not in self.label2id:
                             skipped += 1
-                            print(f"Skipping {raw_label}")
                             continue
-                        label_id = self.label2id[raw_label]
 
-                        marked = self.make_prompt(sent, em1, em2) # This function will make prompt for model
-                        if marked is None:
-                            skipped += 1
-                            continue
-                        
-                        enc = self.tokenizer(
-                            marked,
-                            max_length=self.max_length,
+                        prompt = self.make_prompt(sent, em1, em2)
+                        completion = raw_label + self.tokenizer.eos_token
+
+                        # Tokenize prompt and completion separately to mask prompt in labels
+                        prompt_ids = self.tokenizer(
+                            prompt,
                             truncation=True,
-                            padding=False, # Because sentences in a batch have different lengths. collate later efficiently
-                            return_tensors=None, # return plain Python lists, not torch tensors # Because sentences in a batch have different lengths. 
-                        )
-                        # output is a dictionary with keys "input_ids" and "attention_mask"
-                        ids = enc["input_ids"]
+                            max_length=self.max_length - 20, # leave room for completion
+                            add_special_tokens=True,
+                        )["input_ids"]
 
-                        self.examples.append({
-                            "input_ids": torch.tensor(ids, dtype=torch.long), #for whole numbers used as INDICES
-                            "attention_mask": torch.tensor(enc["attention_mask"], dtype=torch.long), #for whole numbers used as INDICES
-                            "label": label_id,
+                        completion_ids = self.tokenizer(
+                            completion,
+                            add_special_tokens=False,
+                        )["input_ids"]
+
+                        input_ids = prompt_ids + completion_ids
+                        labels = [-100] * len(prompt_ids) + completion_ids
+
+                        # Truncate if still over max_length
+                        if len(input_ids) > self.max_length:
+                            input_ids = input_ids[:self.max_length]
+                            labels = labels[:self.max_length]
+
+                        file_examples.append({
+                            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                            "attention_mask": torch.ones(len(input_ids), dtype=torch.long),
+                            "labels": torch.tensor(labels, dtype=torch.long),
                         })
 
-        print(f"Loaded {len(self.examples)} examples, skipped {skipped}")
+            self.examples.extend(file_examples * repeat)
+
+        print(f"Loaded {len(self.examples)} examples (with repeats), skipped {skipped}")
 
     def __len__(self):
         return len(self.examples)
@@ -113,12 +127,6 @@ class SFTDataset(Dataset):
     def __getitem__(self, idx):
         return self.examples[idx]
 
-    def find_token_position(self, ids, token_id):
-        try:
-            return ids.index(token_id)
-        except ValueError:
-            return None
-    
     def make_prompt(self, sent_text, em1, em2):
         return (
             f'Entity 1: {em1}\n'
@@ -129,23 +137,15 @@ class SFTDataset(Dataset):
 
 def collate_fn(batch, pad_id):
     max_len = max(x["input_ids"].size(0) for x in batch)
-    input_ids_padded = []
-    attn_mask_padded = []
+    input_ids_padded, attn_mask_padded, labels_padded = [], [], []
     for x in batch:
         L = x["input_ids"].size(0)
         pad_len = max_len - L
-        input_ids_padded.append(
-            torch.cat([x["input_ids"], torch.full((pad_len,), pad_id, dtype=torch.long)])
-        )
-        attn_mask_padded.append(
-            torch.cat([x["attention_mask"], torch.zeros(pad_len, dtype=torch.long)])
-        )
+        input_ids_padded.append(torch.cat([x["input_ids"], torch.full((pad_len,), pad_id, dtype=torch.long)]))
+        attn_mask_padded.append(torch.cat([x["attention_mask"], torch.zeros(pad_len, dtype=torch.long)]))
+        labels_padded.append(torch.cat([x["labels"], torch.full((pad_len,), -100, dtype=torch.long)]))
     return {
         "input_ids": torch.stack(input_ids_padded),
         "attention_mask": torch.stack(attn_mask_padded),
-        "e1_pos": torch.tensor([x["e1_pos"] for x in batch], dtype=torch.long),
-        "e1_end_pos": torch.tensor([x["e1_end_pos"] for x in batch], dtype=torch.long),
-        "e2_pos": torch.tensor([x["e2_pos"] for x in batch], dtype=torch.long),
-        "e2_end_pos": torch.tensor([x["e2_end_pos"] for x in batch], dtype=torch.long),
-        "labels": torch.tensor([x["label"] for x in batch], dtype=torch.long),
+        "labels": torch.stack(labels_padded),
     }

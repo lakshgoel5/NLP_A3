@@ -1,52 +1,103 @@
 import os
 import json
+import difflib
 import argparse
 from functools import partial
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 from transformers import AdamW, get_cosine_schedule_with_warmup
 
-from dataset import build_label_map, NUM_CLASSES, RDataset, collate_fn
-from model import load_base_model, lora, RelationClassifier
-
-def compute_metrics(all_true, all_pred, id2label):
-    na_id = {v: k for k, v in id2label.items()}["NA"]  # get NA's integer id
-    labels = [i for i in id2label if i != na_id]
-    macro = f1_score(all_true, all_pred, labels=labels, average="macro", zero_division=0)
-    micro = f1_score(all_true, all_pred, labels=labels, average="micro", zero_division=0)
-    return macro, micro
+from dataset import SFTDataset, ALL_RELATION_LABELS, build_label_map, collate_fn
+from model import load_base_model, lora
 
 
-def evaluate(model, loader, device, id2label):
-    model.eval()
+def closest_label(pred, valid_labels):
+    pred = pred.strip()
+    if pred in valid_labels:
+        return pred
+    for label in valid_labels:
+        if pred.startswith(label):
+            return label
+    matches = difflib.get_close_matches(pred, valid_labels, n=1, cutoff=0.0)
+    return matches[0] if matches else "NA"
+
+
+def make_prompt(sent_text, em1, em2):
+    return (
+        f'Entity 1: {em1}\n'
+        f'Entity 2: {em2}\n'
+        f'Sentence: {sent_text}\n'
+        f'Relation: '
+    )
+
+
+def evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, max_samples=500):
+    label2id, id2label = build_label_map()
+    na_id = label2id["NA"]
+    non_na_ids = [i for i in id2label if i != na_id]
+
     all_true, all_pred = [], []
+
+    model.eval()
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Evaluating", leave=False):
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            e1_pos = batch["e1_pos"].to(device)
-            e1_end_pos = batch["e1_end_pos"].to(device)
-            e2_pos = batch["e2_pos"].to(device)
-            e2_end_pos = batch["e2_end_pos"].to(device)
-            labels = batch["labels"]
+        for val_file in val_files:
+            if not os.path.isfile(val_file):
+                continue
+            with open(val_file, "r", encoding="utf-8") as f:
+                lines = [l.strip() for l in f if l.strip()]
 
-            with autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
-                logits = model(input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos)
+            # Subsample to keep eval fast
+            if max_samples and len(lines) > max_samples:
+                step = len(lines) // max_samples
+                lines = lines[::step][:max_samples]
 
-            preds = logits.argmax(dim=-1).cpu().tolist()
-            all_true.extend(labels.tolist())
-            all_pred.extend(preds)
+            for line in tqdm(lines, desc="Val F1", leave=False):
+                data = json.loads(line)
+                sent = data["sentText"]
+                for rm in data.get("relationMentions", []):
+                    true_label = rm.get("label")
+                    if true_label is None or true_label not in label2id:
+                        continue
+                    em1, em2 = rm["em1Text"], rm["em2Text"]
 
-    macro, micro = compute_metrics(all_true, all_pred, id2label)
+                    prompt = make_prompt(sent, em1, em2)
+                    enc = tokenizer(
+                        prompt,
+                        max_length=max_len,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+                    input_ids = enc["input_ids"].to(device)
+                    attn_mask = enc["attention_mask"].to(device)
+
+                    out_ids = model.generate(
+                        input_ids=input_ids,
+                        attention_mask=attn_mask,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+                    new_tokens = out_ids[0][input_ids.shape[1]:]
+                    pred_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                    pred_label = closest_label(pred_text, ALL_RELATION_LABELS)
+
+                    all_true.append(label2id[true_label])
+                    all_pred.append(label2id[pred_label])
+
+    if not all_true:
+        return 0.0, 0.0
+
+    macro = f1_score(all_true, all_pred, labels=non_na_ids, average="macro", zero_division=0)
+    micro = f1_score(all_true, all_pred, labels=non_na_ids, average="micro", zero_division=0)
     return macro, micro
 
 
-# Evaluated on English, Hindi, Kannada NYT-10 test set
+# Evaluated on English, Hindi, Kannada, Oriya, Telugu NYT-10 test set
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--output_dir", default="./output")
@@ -67,18 +118,18 @@ def main():
 
     print(f"Device: {device}\n")
 
-    #----------Hyperparameters-----------
+    # ---------- Hyperparameters ----------
     epochs = config["epochs"]
     batch_size = config["batch_size"]
     lr = config["lr"]
     max_len = config["max_len"]
+    max_new_tokens = config.get("max_new_tokens", 48)
     weight_decay = config.get("weight_decay", 0.01)
     accumulation = config.get("accumulation_steps", 1)
-    entity_repr = config["entity_repr"]
-
     warmup_ratio = config["warmup_ratio"]
+    indic_repeat = config.get("indic_repeat", 1)
 
-    # ---------Data Paths--------
+    # ---------- Data Paths ----------
     file_paths = [
         "../en_sft_dataset/train.jsonl",
         "../sft_dataset/hi_train.jsonl",
@@ -86,7 +137,7 @@ def main():
         "../sft_dataset/or_train.jsonl",
         "../sft_dataset/tcy_val.jsonl",
     ]
-    val_file_path = ["../en_sft_dataset/valid.jsonl",]
+    val_file_paths = ["../en_sft_dataset/valid.jsonl"]
 
     map_paths = [
         "../sft_dataset/hi_map.json",
@@ -96,35 +147,28 @@ def main():
     ]
 
     train_files = [f for f in file_paths if os.path.isfile(f)]
-    val_files = [f for f in val_file_path if os.path.isfile(f)]
+    val_files = [f for f in val_file_paths if os.path.isfile(f)]
     train_maps = [f for f in map_paths if os.path.isfile(f)]
-    print(f"Training files: {train_files}\n")
+    print(f"Training files: {train_files}")
     print(f"Training maps: {train_maps}\n")
 
-    # -------labels--------
-    label2id, id2label = build_label_map()
-    num_classes = NUM_CLASSES
-
-    #--------model-------
+    # ---------- Model ----------
     tokenizer, base_model = load_base_model()
     # this is only model now
     model = lora(base_model, config["lora_rank"], config["lora_alpha"], config["lora_dropout"])
 
     # Removed relational classifier class
     model = model.to(device)
-    #-------dataset--------
-    # A DataLoader requires an object that follows a specific protocol (the Dataset) so it knows:
-    # How many items exist in total?
-    # How do I grab exactly one item?
 
-    pad_id = tokenizer.pad_token_id
-
+    # ---------- Dataset & Loader ----------
     collate_function = partial(collate_fn, pad_id=tokenizer.pad_token_id)
 
     train_dataset=SFTDataset(
         file_paths=train_files,
         tokenizer=tokenizer,
         max_length=max_len,
+        map_paths=train_maps,
+        indic_repeat=indic_repeat,
     )
 
     train_loader=DataLoader(
@@ -135,22 +179,6 @@ def main():
         num_workers=4,
         pin_memory=True,
     )
-
-    val_dataset = SFTDataset(
-        file_paths=val_files,
-        tokenizer=tokenizer,
-        max_length=max_len,
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size * 2,
-        shuffle=False,
-        collate_fn=collate_function,
-        num_workers=4,
-        pin_memory=True,
-    )
-    
 
     # ------loss------
     # Internally, the model calculates the loss for every token (including padding tokens) and then masks out the padding tokens before averaging. 
@@ -189,11 +217,11 @@ def main():
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
 
-            with autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
-                logits = model(input_ids, attention_mask, labels)
-                loss_val = logits.loss / accumulation
-            
-            scaler.scale(loss_val).backward() #multiply by a big number
+            with autocast(device_type=device.type, enabled=(device.type == "cuda")):
+                output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss_val = output.loss / accumulation
+
+            scaler.scale(loss_val).backward()
 
             if step % accumulation == 0:
                 # We must bring the gradients back to their real size before we look at them.
@@ -222,15 +250,19 @@ def main():
 
         avg_loss = total_loss / len(train_loader)
 
-        macro_f1, micro_f1 = evaluate(model, val_loader, device, id2label)
+        # Switch to left-padding for generation
+        tokenizer.padding_side = "left"
+        macro_f1, micro_f1 = evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens)
+        tokenizer.padding_side = "right"
+
         print(f"\nEpoch {epoch}/{epochs} | Train Loss: {avg_loss:.4f} | Val Macro-F1: {macro_f1:.4f} | Val Micro-F1: {micro_f1:.4f}")
 
         if macro_f1 > best_macro_f1:
             best_macro_f1 = macro_f1
+            model.save_pretrained(args.output_dir)
+            tokenizer.save_pretrained(args.output_dir)
+            print(f"\nSaved best model (macro_f1={macro_f1:.4f})")
 
-            checkpoint_path = os.path.join(args.output_dir)
-            model.save_pretrained(checkpoint_path)
-            tokenizer.save_pretrained(checkpoint_path)
 
 if __name__ == "__main__":
     main()

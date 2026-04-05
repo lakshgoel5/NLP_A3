@@ -6,7 +6,7 @@
     "weight_decay": 0.01,
     "accumulation_steps": 4,
     "max_len": 256,
-    "max_new_tokens": 32,
+    "max_new_tokens": 48,
     "lora_rank": 16,
     "lora_alpha": 32,
     "lora_dropout": 0.05,
