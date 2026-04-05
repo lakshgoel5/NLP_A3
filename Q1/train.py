@@ -24,13 +24,13 @@ def evaluate(model, loader, device, id2label):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             e1_pos = batch["e1_pos"].to(device)
-            e1c_pos = batch["e1c_pos"].to(device)
+            e1_end_pos = batch["e1_end_pos"].to(device)
             e2_pos = batch["e2_pos"].to(device)
-            e2c_pos = batch["e2c_pos"].to(device)
+            e2_end_pos = batch["e2_end_pos"].to(device)
             labels = batch["labels"]
 
             with autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
-                logits = model(input_ids, attention_mask, e1_pos, e1c_pos, e2_pos, e2c_pos)
+                logits = model(input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos)
 
             preds = logits.argmax(dim=-1).cpu().tolist()
             all_true.extend(labels.tolist())
@@ -198,13 +198,13 @@ def main():
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             e1_pos = batch["e1_pos"].to(device)
-            e1c_pos = batch["e1c_pos"].to(device)
+            e1_end_pos = batch["e1_end_pos"].to(device)
             e2_pos = batch["e2_pos"].to(device)
-            e2c_pos = batch["e2c_pos"].to(device)
+            e2_end_pos = batch["e2_end_pos"].to(device)
             labels = batch["labels"].to(device)
 
             with autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
-                logits = model(input_ids, attention_mask, e1_pos, e1c_pos, e2_pos, e2c_pos)
+                logits = model(input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos)
                 loss_val = loss_function(logits, labels)
                 loss_val = loss_val / accumulation
             
