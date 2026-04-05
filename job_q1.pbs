@@ -11,6 +11,8 @@ conda activate skylake_env_2
 cd /home/cse/btech/cs1230848/NLP_A3
 
 cd Q1
+
+export HF_TOKEN="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"
 ./train.sh ./output
 
 # Inference (one per language)

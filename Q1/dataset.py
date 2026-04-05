@@ -1,3 +1,6 @@
+import json
+import torch
+from torch.utils.data import Dataset
 
 ALL_RELATION_LABELS = [
     "NA",
@@ -33,3 +36,11 @@ def build_label_map():
     label2id = {l: i for i, l in enumerate(ALL_RELATION_LABELS)}
     id2label  = {i: l for i, l in enumerate(ALL_RELATION_LABELS)}
     return label2id, id2label
+
+class Dataset:
+    def __init__(self, file_paths, map_paths, tokenizer, label2id, max_len):
+        self.file_paths = file_paths
+        self.map_paths = map_paths
+        self.tokenizer = tokenizer
+        self.label2id = label2id
+        self.max_len = max_len

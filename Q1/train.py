@@ -8,7 +8,7 @@ from model import load_base_model, lora
 
 # Evaluated on English, Hindi, Kannada NYT-10 test set
 def main():
-    p = argparser.ArgumentParser()
+    p = argparse.ArgumentParser()
     p.add_argument("--output_dir", default="./output")
     p.add_argument("--config_path", default="./config.json")
     args = p.parse_args()
@@ -27,11 +27,19 @@ def main():
 
     print(f"Device: {device}\n")
 
+    #----------Hyperparameters-----------
+    epochs = config["epochs"]
+    batch_size = config["batch_size"]
+    lr = config["learning_rate"]
+    max_len = config["max_len"]
+
+    # ---------Data Paths--------
     file_paths = [
         "../en_sft_dataset/train.jsonl",
         "../sft_dataset/hi_train.jsonl",
         "../sft_dataset/kn_train.jsonl",
     ]
+    val_file_path = "../en_sft_dataset/valid.jsonl"
 
     map_paths = [
         "../sft_dataset/hi_map.json",
@@ -43,14 +51,39 @@ def main():
     print(f"Training files: {train_files}\n")
     print(f"Training maps: {train_maps}\n")
 
+    # -------labels--------
     label2id, id2label = build_label_map()
     num_classes = NUM_CLASSES
 
+    #--------model-------
     tokenizer, base_model = load_base_model()
-
     base_model = lora(base_model, config["lora_rank"], config["lora_alpha"], config["lora_dropout"])
-    
 
+    #-------dataset--------
+    # A DataLoader requires an object that follows a specific protocol (the Dataset) so it knows:
+    # How many items exist in total?
+    # How do I grab exactly one item?
+    train_dataset=Dataset(
+        file_paths=train_files,
+        map_paths=train_maps,
+        tokenizer=tokenizer,
+        label2id=label2id,
+        max_len=max_len,
+    )
+
+    train_loader=DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_function,
+        num_workers=4,
+        pin_memory=True,
+    )
+
+    # ---------Optimiser---------
+    #DEISGN separate learning rates
+
+    
 
 
 if __name__ == "__main__":
