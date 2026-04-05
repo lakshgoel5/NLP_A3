@@ -25,8 +25,10 @@ def load_base_model():
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         dtype=torch.float16, # save memory # DESIGN (bfloat16 might be stable on A100)
-        output_hidden_states=True, # we need hidden states for classification, we'll feed last layer output to linear classifier and 
     )
+    
+    # output_hidden_states must be set on the config, NOT passed to from_pretrained
+    model.config.output_hidden_states = True
 
     # Resize embeddings for new tokens
     model.resize_token_embeddings(len(tokenizer))

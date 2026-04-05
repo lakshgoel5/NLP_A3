@@ -2,6 +2,8 @@
     "epochs": 10,
     "batch_size": 16,
     "lr": 2e-4,
+    "weight_decay": 0.01,
+    "accumulation_steps": 2,
 
     "lora_rank": 16,
     "lora_alpha": 32,
