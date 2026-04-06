@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 from sklearn.metrics import f1_score
-from transformers import AdamW, get_cosine_schedule_with_warmup
-
+from torch.optim import AdamW
+from transformers import get_cosine_schedule_with_warmup
 from dataset import SFTDataset, ALL_RELATION_LABELS, build_label_map, collate_fn
 from model import load_base_model, lora
 
