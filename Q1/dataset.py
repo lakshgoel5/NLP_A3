@@ -2,6 +2,7 @@ import json
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import os
 
 ALL_RELATION_LABELS = [
     "NA",
@@ -39,7 +40,7 @@ def build_label_map():
     return label2id, id2label
 
 
-class RelationDataset(Dataset):
+class RDataset(Dataset):
     def __init__(self, file_paths, tokenizer, label2id, map_paths=None, max_length=256):
         self.tokenizer = tokenizer
         self.label2id = label2id
@@ -68,19 +69,24 @@ class RelationDataset(Dataset):
         for file_path in file_paths:
             inv_map = file_to_invmap.get(file_path, None)
             
+            # --- SUBMISSION: replace the 3 lines below with the robust block (see commented code) ---
             with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            decoder = json.JSONDecoder()
-            buf = content.lstrip()
-            records = []
-            while buf:
-                try:
-                    obj, idx = decoder.raw_decode(buf)
-                    records.append(obj)
-                    buf = buf[idx:].lstrip()
-                except json.JSONDecodeError:
-                    break
-            for data in tqdm(records, desc=file_path.split("/")[-1], leave=False):
+                lines = f.readlines()
+            for data in tqdm([json.loads(l) for l in lines if l.strip()], desc=file_path.split("/")[-1], leave=False):
+            # --- ROBUST (handles pretty-printed JSON too) — uncomment for submission ---
+            # with open(file_path, "r", encoding="utf-8") as f:
+            #     content = f.read()
+            # decoder = json.JSONDecoder()
+            # buf = content.lstrip()
+            # records = []
+            # while buf:
+            #     try:
+            #         obj, idx = decoder.raw_decode(buf)
+            #         records.append(obj)
+            #         buf = buf[idx:].lstrip()
+            #     except json.JSONDecodeError:
+            #         break
+            # for data in tqdm(records, desc=file_path.split("/")[-1], leave=False):
                     sent = data["sentText"]
                     for rm in data.get("relationMentions", []):
                         em1 = rm["em1Text"]

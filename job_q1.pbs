@@ -8,8 +8,8 @@ export PATH=/home/apps/centos7/JAX_MD/bin:$PATH
 export HF_TOKEN="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"
 
 cd /home/cse/btech/cs1230848/HPC-IIT-Delhi
-python3 iitdproxy.py proxyAuth.txt
+python3 iitdproxy.py proxyAuth.txt &
 
 cd /home/cse/btech/cs1230848/NLP_A3/Q1  
 
-python train.py
+python -u train.py
