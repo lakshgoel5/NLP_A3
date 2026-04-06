@@ -6,7 +6,10 @@ from functools import partial
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.amp import GradScaler, autocast
+try:
+    from torch.amp import GradScaler, autocast  # PyTorch >= 1.10
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 from torch.optim import AdamW
