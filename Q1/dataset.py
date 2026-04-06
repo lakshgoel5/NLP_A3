@@ -39,6 +39,34 @@ def build_label_map():
     id2label  = {i: l for i, l in enumerate(ALL_RELATION_LABELS)}
     return label2id, id2label
 
+def mark_entities(sent_text, em1, em2):
+    pos1 = sent_text.find(em1) # searches the string for substring and returns the character index of its first occurrence.
+    pos2 = sent_text.find(em2)
+
+    if pos1 == -1 or pos2 == -1:
+        return None
+
+    # Build a list of (start, end, open_tag, close_tag) sorted right-to-left
+    spans = [
+        (pos1, pos1 + len(em1), "[E1]", "[/E1]"),
+        (pos2, pos2 + len(em2), "[E2]", "[/E2]"),
+    ]
+
+    # Sort spans by start position in descending order
+    spans.sort(key=lambda x: x[0], reverse=True)
+
+    # Insert tags into the sentence
+    marked_sent = sent_text
+    for start, end, open_tag, close_tag in spans:
+        marked_sent = marked_sent[:start] + open_tag + marked_sent[start:end] + close_tag + marked_sent[end:]
+
+    return marked_sent
+
+def find_token_position(ids, token_id):
+    try:
+        return ids.index(token_id)
+    except ValueError:
+        return None
 
 class RDataset(Dataset):
     def __init__(self, file_paths, tokenizer, label2id, map_paths=None, max_length=256):
@@ -102,7 +130,7 @@ class RDataset(Dataset):
                             continue
                         label_id = self.label2id[raw_label]
 
-                        marked = self.mark_entities(sent, em1, em2) # This function will add special tokens around the entities
+                        marked = mark_entities(sent, em1, em2) # This function will add special tokens around the entities
                         if marked is None:
                             skipped += 1
                             continue
@@ -118,10 +146,10 @@ class RDataset(Dataset):
                         ids = enc["input_ids"]
 
                         # Locate special token positions
-                        e1_pos = self.find_token_position(ids, e1_id)
-                        e1_end_pos = self.find_token_position(ids, e1_end_id)
-                        e2_pos = self.find_token_position(ids, e2_id)
-                        e2_end_pos = self.find_token_position(ids, e2_end_id)
+                        e1_pos = find_token_position(ids, e1_id)
+                        e1_end_pos = find_token_position(ids, e1_end_id)
+                        e2_pos = find_token_position(ids, e2_id)
+                        e2_end_pos = find_token_position(ids, e2_end_id)
 
                         if e1_pos is None or e1_end_pos is None or e2_pos is None or e2_end_pos is None:
                             skipped += 1
@@ -144,35 +172,6 @@ class RDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.examples[idx]
-
-    def find_token_position(self, ids, token_id):
-        try:
-            return ids.index(token_id)
-        except ValueError:
-            return None
-    
-    def mark_entities(self, sent_text, em1, em2):
-        pos1 = sent_text.find(em1) # searches the string for substring and returns the character index of its first occurrence.
-        pos2 = sent_text.find(em2)
-
-        if pos1 == -1 or pos2 == -1:
-            return None
-
-        # Build a list of (start, end, open_tag, close_tag) sorted right-to-left
-        spans = [
-            (pos1, pos1 + len(em1), "[E1]", "[/E1]"),
-            (pos2, pos2 + len(em2), "[E2]", "[/E2]"),
-        ]
-
-        # Sort spans by start position in descending order
-        spans.sort(key=lambda x: x[0], reverse=True)
-
-        # Insert tags into the sentence
-        marked_sent = sent_text
-        for start, end, open_tag, close_tag in spans:
-            marked_sent = marked_sent[:start] + open_tag + marked_sent[start:end] + close_tag + marked_sent[end:]
-
-        return marked_sent
 
 
 def collate_fn(batch, pad_id):
