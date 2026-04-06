@@ -69,12 +69,18 @@ class RelationDataset(Dataset):
             inv_map = file_to_invmap.get(file_path, None)
             
             with open(file_path, "r", encoding="utf-8") as f:
-                for line in tqdm(f, desc=file_path.split("/")[-1], leave=False):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    data = json.loads(line) # This converts the JSON-formatted string into a Python dictionary
+                content = f.read()
+            decoder = json.JSONDecoder()
+            buf = content.lstrip()
+            records = []
+            while buf:
+                try:
+                    obj, idx = decoder.raw_decode(buf)
+                    records.append(obj)
+                    buf = buf[idx:].lstrip()
+                except json.JSONDecodeError:
+                    break
+            for data in tqdm(records, desc=file_path.split("/")[-1], leave=False):
                     sent = data["sentText"]
                     for rm in data.get("relationMentions", []):
                         em1 = rm["em1Text"]

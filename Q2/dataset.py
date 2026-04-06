@@ -67,12 +67,18 @@ class SFTDataset(Dataset):
 
             file_examples = []
             with open(file_path, "r", encoding="utf-8") as f:
-                for line in tqdm(f, desc=os.path.basename(file_path), leave=False):
-                    line = line.strip()
-                    if not line:
-                        continue
-
-                    data = json.loads(line)
+                content = f.read()
+            decoder = json.JSONDecoder()
+            buf = content.lstrip()
+            records = []
+            while buf:
+                try:
+                    obj, idx = decoder.raw_decode(buf)
+                    records.append(obj)
+                    buf = buf[idx:].lstrip()
+                except json.JSONDecodeError:
+                    break
+            for data in tqdm(records, desc=os.path.basename(file_path), leave=False):
                     sent = data["sentText"]
                     for rm in data.get("relationMentions", []):
                         em1 = rm["em1Text"]

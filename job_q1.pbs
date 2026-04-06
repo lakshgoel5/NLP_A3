@@ -1,12 +1,15 @@
 #!/bin/bash
 #PBS -N Rel_ext
 #PBS -P col772.cs1230848.course
-#PBS -l select=1:ncpus=8:ngpus=1:mem=32G:centos=skylake
+#PBS -l select=1:ncpus=4:ngpus=1:centos=skylake
 #PBS -l walltime=02:00:00
 
 export PATH=/home/apps/centos7/JAX_MD/bin:$PATH
 export HF_TOKEN="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"
 
-cd /home/cse/btech/cs1230848/NLP_A3/Q1
+cd /home/cse/btech/cs1230848/HPC-IIT-Delhi
+python3 iitdproxy.py proxyAuth.txt
+
+cd /home/cse/btech/cs1230848/NLP_A3/Q1  
 
 python train.py
