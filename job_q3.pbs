@@ -8,7 +8,7 @@ eval "$(conda shell.bash hook)"
 conda deactivate
 conda activate /scratch/cse/phd/csz208845/envs/vllm_server/
 
-cd /home/cse/btech/cs1230848/NLP_A3
+cd /home/cse/btech/cs1230848/NLP_A3/Q3
 
-cd Q3
+bash infer.sh ./output
 
