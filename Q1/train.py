@@ -158,7 +158,13 @@ def main():
     
 
     # ------loss------
-    loss_function = nn.CrossEntropyLoss() #DESIGN: could use FocalLoss
+    # Weighted CE upweights rare relation types vs NA (majority class), improving macro F1
+    label_counts = torch.zeros(num_classes)
+    for ex in train_dataset.examples:
+        label_counts[ex["label"]] += 1
+    weights = 1.0 / label_counts.clamp(min=1)
+    weights = weights / weights.sum() * num_classes
+    loss_function = nn.CrossEntropyLoss(weight=weights.to(device))
 
     # ---------Optimiser---------
     #DEISGN separate learning rates
@@ -179,7 +185,7 @@ def main():
     optimizer = AdamW(groups, weight_decay=weight_decay)
 
     #-----scaler for float16 error------
-    scaler = GradScaler("cpu", enabled=False) if device.type not in ("cuda",) else GradScaler("cuda")
+    scaler = GradScaler() if device.type == "cuda" else GradScaler(enabled=False)
 
     # ---------Scheduler----------
     total_steps = (len(train_loader) // accumulation) * epochs
