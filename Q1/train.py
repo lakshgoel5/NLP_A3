@@ -137,6 +137,7 @@ def main():
         num_workers=4,
         pin_memory=True,
     )
+    # The PyTorch DataLoader uses a built-in default collate function. When it groups 32 of these dictionaries together to form a batch, it automatically sees those plain integers, stacks them together, and converts them into a 1D PyTorch Tensor.
 
     val_dataset = RDataset(
         file_paths=val_files,
@@ -207,7 +208,7 @@ def main():
         for step, batch in enumerate(pbar, 1):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            e1_pos = batch["e1_pos"].to(device)
+            e1_pos = batch["e1_pos"].to(device) # batch["e1_pos"] is already a tensor of shape (batch_size,)
             e1_end_pos = batch["e1_end_pos"].to(device)
             e2_pos = batch["e2_pos"].to(device)
             e2_end_pos = batch["e2_end_pos"].to(device)

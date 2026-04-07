@@ -5,12 +5,17 @@ import argparse
 from functools import partial
 from torch.utils.data import Dataset, DataLoader
 
+try:
+    from torch.amp import autocast
+except ImportError:
+    from torch.cuda.amp import autocast
+
 import torch
 from tqdm import tqdm
 from peft import PeftModel
 from transformers import AutoModel, AutoTokenizer
 
-from dataset import ALL_RELATION_LABELS, build_label_map, NUM_CLASSES, mark_entities
+from dataset import ALL_RELATION_LABELS, build_label_map, NUM_CLASSES, mark_entities, find_token_position
 from model import RelationClassifier, SPECIAL_TOKENS
 
 class InferenceDataset(Dataset):
@@ -18,19 +23,22 @@ class InferenceDataset(Dataset):
         self.tokeniser = tokeniser
         self.max_len = max_len
 
-        self.data = []
+        self.flat_data = []
 
         for rec_idx, entry in enumerate(test_entries):
             sentence = entry["sentText"]
             for men_idx, rm in enumerate(entry.get("relationMentions", [])):
                 marked = mark_entities(sentence, rm["em1Text"], rm["em2Text"])
-                self.data.append((rec_idx, men_idx, marked))
+                self.flat_data.append((rec_idx, men_idx, marked))
 
     def __len__(self):
-        return len(self.data)
+        return len(self.flat_data)
 
     def __getitem__(self, idx):
-        rec_idx, men_idx, marked = self.data[idx]
+        rec_idx, men_idx, marked = self.flat_data[idx]
+
+        if marked is None:
+            marked = ""
 
         tokens = self.tokeniser(
             marked,
@@ -134,19 +142,9 @@ def main():
             if line:
                 test_entries.append(json.loads(line))
 
-    # Each (sentence, entity pair) is one inference call.
-    flat_items = []  # (record_idx, mention_idx, marked_sentence)
-    for rec_idx, record in enumerate(test_entries):
-        sentence = record["sentText"]
-        for men_idx, rm in enumerate(record.get("relationMentions", [])):
-            em1 = rm["em1Text"]
-            em2 = rm["em2Text"]
-            marked = mark_entities(sentence, em1, em2)
-            flat_items.append((rec_idx, men_idx, marked))
-
     #----------Dataloader------------
     # no label, therefore write a new data loader
-    dataset = InferenceDataset(flat_items, tokenizer, max_len)
+    dataset = InferenceDataset(test_entries, tokenizer, max_len)
     collate = partial(infer_collate_fn, pad_id=tokenizer.pad_token_id)
 
     inf_loader = DataLoader(
@@ -164,29 +162,53 @@ def main():
     e2_id = tokenizer.convert_tokens_to_ids("[E2]")
     e2_end_id = tokenizer.convert_tokens_to_ids("[/E2]")
 
+    #---------Initialise result dict------------
+    results = []
+    for record in test_entries:
+        results.append({
+            "articleId": record.get("articleId", ""),
+            "sentId":    record.get("sentId", ""),
+            "sentText":  record["sentText"],
+            "relationMentions": [
+                {"em1Text": rm["em1Text"], "em2Text": rm["em2Text"], "label": "NA"}
+                for rm in record.get("relationMentions", [])
+            ],
+        })
+
     #------------batch inference------------
     for batch in tqdm(inf_loader, desc="Inference"):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
 
-        ids = input_ids.tolist()
+        ids = input_ids.tolist() # Because input_ids was already batched, input_ids.tolist() returned a list of lists.
 
-        e1_pos = find_token_position(ids, e1_id)
-        e1_end_pos = find_token_position(ids, e1_end_id)
-        e2_pos = find_token_position(ids, e2_id)
-        e2_end_pos = find_token_position(ids, e2_end_id)
+        e1_pos = torch.tensor([find_token_position(row, e1_id) or 0 for row in ids], dtype=torch.long, device=device)
+        e1_end_pos = torch.tensor([find_token_position(row, e1_end_id) or 0 for row in ids], dtype=torch.long, device=device)
+        e2_pos = torch.tensor([find_token_position(row, e2_id) or 0 for row in ids], dtype=torch.long, device=device)
+        e2_end_pos = torch.tensor([find_token_position(row, e2_end_id) or 0 for row in ids], dtype=torch.long, device=device)
+
+        use_amp = device.type in ("cuda", "mps")
 
         with torch.no_grad():
-            with torch.amp.autocast(device_type=device.type, enabled=(device.type in ("cuda", "mps"))):
+            try:
+                # Modern PyTorch (2.x) expects the device_type argument
+                ctx = autocast(device_type=device.type, enabled=use_amp)
+            except TypeError:
+                # Legacy PyTorch (1.x) fallback
+                ctx = autocast(enabled=use_amp)
+
+            with ctx:
                 logits = model(input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos)
         
         preds = logits.argmax(dim=-1).cpu().tolist()
 
+        #--------create results dict--------
         for i, (rec_idx, men_idx) in enumerate(zip(batch["rec_idx"], batch["men_idx"])):
             en_label = id2label[preds[i]] #What label is in english
             label = fwd_map.get(en_label, en_label) if fwd_map else en_label
             results[rec_idx]["relationMentions"][men_idx]["label"] = label
 
+    #---------write output-----------
     output_path = os.path.join(args.output_dir, f"output_{args.lang}.jsonl")
     with open(output_path, "w", encoding="utf-8") as f:
         for r in results:
