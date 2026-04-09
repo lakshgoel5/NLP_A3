@@ -1,6 +1,8 @@
 from vllm import LLM, SamplingParams
 from typing import List
 
+import argparse
+
 def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct") -> List[str]:
     """
     Takes a list of prompt strings and returns a list of generated text strings using vLLM.
@@ -24,9 +26,18 @@ def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Me
 
     return generated_texts
 
-# ==========================================
-# Example Usage
-# ==========================================
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--lang", required=True, choices=["en", "hi", "kn", "or", "tcy"])
+    p.add_argument("--test_file", required=True)
+    p.add_argument("--output_dir", default="./output")
+
+    args = p.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+
+
 if __name__ == "__main__":
     # List of input strings
     my_prompts = [
@@ -43,3 +54,5 @@ if __name__ == "__main__":
         print(f"\n--- Prompt {i+1} ---")
         print(f"Input: {prompt}")
         print(f"Output: {response}")
+
+    main()

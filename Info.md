@@ -170,3 +170,12 @@ Model can read 128k tokens.
 
 ## Few shot learning
 - examples you include in your prompt to show the model how to perform a task
+
+## Cross lingual
+Even though "apple" in English and "सेब" (seb) in Hindi look completely different, a multilingual model maps them to nearly the same point in a mathematical "meaning space" 📍. This allows us to compare the intent of a sentence rather than just the words
+
+## Input
+
+Input Sentence: "उत्तरी कैरोलिना ईस्टर्न म्यूजिक फेस्टिवल ग्रीन्सबोरो , 25 जून-30 जुलाई।" \
+Query Entities: Entity 1: "उत्तरी कैरोलिना", Entity 2: "ग्रीन्सबोरो" \
+Output JSON: {"relationMentions": [{"em1Text": "उत्तरी कैरोलिना", "em2Text": "ग्रीन्सबोरो", "label": "/स्थान/स्थान/शामिल_है"}]}

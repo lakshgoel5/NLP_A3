@@ -2,7 +2,7 @@
 #PBS -N Q2_RelExt
 #PBS -P col772.cs1230848.course
 #PBS -l select=1:ncpus=4:ngpus=1:centos=skylake
-#PBS -l walltime=00:10:00
+#PBS -l walltime=04:00:00
 
 export PATH=/home/apps/centos7/JAX_MD/bin:$PATH
 export HF_TOKEN="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"

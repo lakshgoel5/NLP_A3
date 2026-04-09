@@ -2,7 +2,7 @@
 #PBS -N Q1_RelExt
 #PBS -P col772.cs1230848.course
 #PBS -l select=1:ncpus=4:ngpus=1:centos=skylake
-#PBS -l walltime=00:40:00
+#PBS -l walltime=03:00:00
 
 export PATH=/home/apps/centos7/JAX_MD/bin:$PATH
 export HF_TOKEN="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"
@@ -14,12 +14,12 @@ python3 iitdproxy.py proxyAuth.txt &
 BASE=/home/cse/btech/cs1230848/NLP_A3
 cd "$BASE/Q1"
 
-# echo "====== Training Q1 ======"
-# bash train.sh ./output
+echo "====== Training Q1 ======"
+bash train.sh ./output
 
-# echo "====== Inference Q1 ======"
-# bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"  ./output
-# bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"  ./output
+echo "====== Inference Q1 ======"
+bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"  ./output
+bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"  ./output
 bash infer.sh kn  "$BASE/sft_dataset/kn_train.jsonl"  ./output
 
 echo "====== Evaluation Q1 ======"
