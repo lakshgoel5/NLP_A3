@@ -151,3 +151,22 @@ Concatenate all four boundary tokens.
 
 This captures both the start and end context of each entity span.
 
+# Task 3
+The defining constraint of Task 3 is that there are no gradient updates; you cannot "train" or fine-tune the model. Instead, you must guide the model to the correct answer by providing high-quality instructions and examples within the input text itself. \
+
+To succeed in this task, we need to focus on Prompt Engineering and Example Selection. \
+
+Model can read 128k tokens.
+
+## Demonstration Selection
+- Balancing the number of examples with the model's context window limits
+- Deciding whether to use English examples, target-language examples, or a mix for unseen languages like Oriya
+- Comparing random sampling, stratified selection (by relation type), and similarity-based retrieval using FAISS
+
+## FAISS
+- How it works: You convert your test sentence into a "vector" (a list of numbers representing its meaning).
+
+- The goal: You search your training data (like the English or Hindi sets) for the sentences that are most "similar" to your test sentence and use those as your few-shot demonstrations.
+
+## Few shot learning
+- examples you include in your prompt to show the model how to perform a task
