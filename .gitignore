@@ -208,3 +208,8 @@ __marimo__/
 *Store
 outputs/
 Rel*
+output/
+*.zip
+Q1_*
+Q2_*
+Q3_*

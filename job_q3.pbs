@@ -1,14 +1,50 @@
 #!/bin/bash
-#PBS -N Rel_ext
+#PBS -N Q3_ICL
 #PBS -P col772.cs1230848.course
 #PBS -l select=1:ncpus=8:ngpus=1:mem=32G:centos=skylake
-#PBS -l walltime=02:00:00
+#PBS -l walltime=03:00:00
+
+# Required for vllm + faiss-gpu environment
+module load compiler/gcc/11.2.0
 
 eval "$(conda shell.bash hook)"
 conda deactivate
-conda activate /scratch/cse/phd/csz208845/envs/vllm_server/
+conda activate /home/scai/msr/aiy247541/.conda/envs/vllm_server_nlp
 
-cd /home/cse/btech/cs1230848/NLP_A3/Q3
+# Required for faiss-gpu to find CUDA runtime libs
+export LD_LIBRARY_PATH=/home/scai/msr/aiy247541/.conda/envs/vllm_server_nlp/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:$LD_LIBRARY_PATH
+export WANDB_DISABLED=true
 
+cd /home/cse/btech/cs1230848/HPC-IIT-Delhi
+python3 iitdproxy.py proxyAuth.txt &
+
+BASE=/home/cse/btech/cs1230848/NLP_A3
+
+# Install sklearn into the vllm env if not already present (eval.py needs it)
+pip install -q scikit-learn
+
+if [ ! -d "$BASE/h" ]; then
+    echo "ERROR: $BASE/h not found. Please upload the h/ folder to the HPC first."
+    exit 1
+fi
+cd "$BASE/h"
+
+echo "====== Q3 ICL Inference ======"
 bash infer.sh ./output
+
+echo "====== Evaluation Q3 ======"
+# Evaluate against whichever files infer.sh used (test if present, else train/val)
+for lang in hi kn or tcy; do
+    if   [ -f "$BASE/sft_dataset/${lang}_test.jsonl" ]; then
+        ref="$BASE/sft_dataset/${lang}_test.jsonl"
+    elif [ "$lang" = "tcy" ]; then
+        ref="$BASE/sft_dataset/tcy_val.jsonl"
+    else
+        ref="$BASE/sft_dataset/${lang}_train.jsonl"
+    fi
+    echo "--- $lang (ref: $ref) ---"
+    python -u "$BASE/eval.py" ./output/output_${lang}.jsonl "$ref"
+done
+
+echo "====== Q3 Done ======"
 
