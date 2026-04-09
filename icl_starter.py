@@ -1,7 +1,7 @@
 from vllm import LLM, SamplingParams
 from typing import List
 
-def generate_vllm_responses(prompts: List[str], model_name: str = "") -> List[str]:
+def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct") -> List[str]:
     """
     Takes a list of prompt strings and returns a list of generated text strings using vLLM.
     """

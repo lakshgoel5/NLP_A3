@@ -1,5 +1,8 @@
 import os
 import json
+import random
+import shutil
+import tempfile
 import argparse
 from functools import partial
 
@@ -17,6 +20,22 @@ from transformers import get_cosine_schedule_with_warmup
 
 from dataset import build_label_map, NUM_CLASSES, RDataset, collate_fn
 from model import load_base_model, lora, RelationClassifier
+
+def split_indic_file(file_path, tmp_dir, val_ratio=0.2, seed=42):
+    """Shuffle and split a jsonl file. Returns (train_path, val_path) in tmp_dir."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+    random.Random(seed).shuffle(lines)
+    n_val = max(1, int(len(lines) * val_ratio))
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    train_path = os.path.join(tmp_dir, f"{stem}_80pct.jsonl")
+    val_path   = os.path.join(tmp_dir, f"{stem}_20pct.jsonl")
+    with open(train_path, "w", encoding="utf-8") as f:
+        f.writelines(lines[n_val:])
+    with open(val_path, "w", encoding="utf-8") as f:
+        f.writelines(lines[:n_val])
+    return train_path, val_path
+
 
 def compute_metrics(all_true, all_pred, id2label):
     na_id = {v: k for k, v in id2label.items()}["NA"]  # get NA's integer id
@@ -83,22 +102,29 @@ def main():
     warmup_ratio = config["warmup_ratio"]
 
     # ---------Data Paths--------
-    file_paths = [
-        "../en_sft_dataset/train.jsonl",
-        "../sft_dataset/hi_train.jsonl",
-        "../sft_dataset/kn_train.jsonl",
-    ]
-    val_file_path = ["../en_sft_dataset/valid.jsonl",]
-
-    map_paths = [
-        "../sft_dataset/hi_map.json",
-        "../sft_dataset/kn_map.json",
+    INDIC_FILES = [
+        ("../sft_dataset/hi_train.jsonl", "../sft_dataset/hi_map.json"),
+        ("../sft_dataset/kn_train.jsonl", "../sft_dataset/kn_map.json"),
     ]
 
-    train_files = [f for f in file_paths if os.path.isfile(f)]
-    val_files = [f for f in val_file_path if os.path.isfile(f)]
-    train_maps = [f for f in map_paths if os.path.isfile(f)]
-    print(f"Training files: {train_files}\n")
+    tmp_dir = tempfile.mkdtemp(prefix="q1_splits_")
+    train_files = ["../en_sft_dataset/train.jsonl"]
+    val_files   = ["../en_sft_dataset/valid.jsonl"]
+    train_maps  = []
+    val_maps    = []
+
+    for data_file, map_file in INDIC_FILES:
+        if os.path.isfile(data_file):
+            tr, vl = split_indic_file(data_file, tmp_dir)
+            train_files.append(tr)
+            val_files.append(vl)
+            if os.path.isfile(map_file):
+                train_maps.append(map_file)
+                val_maps.append(map_file)
+
+    train_files = [f for f in train_files if os.path.isfile(f)]
+    val_files   = [f for f in val_files   if os.path.isfile(f)]
+    print(f"Training files: {train_files}")
     print(f"Training maps: {train_maps}\n")
 
     # -------labels--------
@@ -143,7 +169,7 @@ def main():
         file_paths=val_files,
         tokenizer=tokenizer,
         label2id=label2id,
-        map_paths=None,
+        map_paths=val_maps,
         max_length=max_len,
     )
 
@@ -265,6 +291,8 @@ def main():
             tokenizer.save_pretrained(checkpoint_path)
 
             torch.save(model.classifier.state_dict(), os.path.join(args.output_dir, "classifier_head.pt"))
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

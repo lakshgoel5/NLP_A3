@@ -1,5 +1,8 @@
 import os
 import json
+import random
+import shutil
+import tempfile
 import difflib
 import argparse
 from functools import partial
@@ -16,6 +19,22 @@ from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 from dataset import SFTDataset, ALL_RELATION_LABELS, build_label_map, collate_fn
 from model import load_base_model, lora
+
+
+def split_indic_file(file_path, tmp_dir, val_ratio=0.2, seed=42):
+    """Shuffle and split a jsonl file. Returns (train_path, val_path) in tmp_dir."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+    random.Random(seed).shuffle(lines)
+    n_val = max(1, int(len(lines) * val_ratio))
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    train_path = os.path.join(tmp_dir, f"{stem}_80pct.jsonl")
+    val_path   = os.path.join(tmp_dir, f"{stem}_20pct.jsonl")
+    with open(train_path, "w", encoding="utf-8") as f:
+        f.writelines(lines[n_val:])
+    with open(val_path, "w", encoding="utf-8") as f:
+        f.writelines(lines[:n_val])
+    return train_path, val_path
 
 
 def closest_label(pred, valid_labels):
@@ -38,10 +57,11 @@ def make_prompt(sent_text, em1, em2):
     )
 
 
-def evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, max_samples=500):
+def evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, max_samples=500, file_to_inv_map=None):
     label2id, id2label = build_label_map()
     na_id = label2id["NA"]
     non_na_ids = [i for i in id2label if i != na_id]
+    file_to_inv_map = file_to_inv_map or {}
 
     all_true, all_pred = [], []
 
@@ -50,6 +70,7 @@ def evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, ma
         for val_file in val_files:
             if not os.path.isfile(val_file):
                 continue
+            inv_map = file_to_inv_map.get(val_file)
             with open(val_file, "r", encoding="utf-8") as f:
                 lines = [l.strip() for l in f if l.strip()]
 
@@ -63,6 +84,8 @@ def evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, ma
                 sent = data["sentText"]
                 for rm in data.get("relationMentions", []):
                     true_label = rm.get("label")
+                    if inv_map is not None:
+                        true_label = inv_map.get(true_label, true_label)
                     if true_label is None or true_label not in label2id:
                         continue
                     em1, em2 = rm["em1Text"], rm["em2Text"]
@@ -133,25 +156,33 @@ def main():
     indic_repeat = config.get("indic_repeat", 1)
 
     # ---------- Data Paths ----------
-    file_paths = [
-        "../en_sft_dataset/train.jsonl",
-        "../sft_dataset/hi_train.jsonl",
-        "../sft_dataset/kn_train.jsonl",
-        "../sft_dataset/or_train.jsonl",
-        "../sft_dataset/tcy_val.jsonl",
-    ]
-    val_file_paths = ["../en_sft_dataset/valid.jsonl"]
-
-    map_paths = [
-        "../sft_dataset/hi_map.json",
-        "../sft_dataset/kn_map.json",
-        "../sft_dataset/or_map.json",
-        "../sft_dataset/tcy_map.json",
+    INDIC_FILES = [
+        ("../sft_dataset/hi_train.jsonl",  "../sft_dataset/hi_map.json"),
+        ("../sft_dataset/kn_train.jsonl",  "../sft_dataset/kn_map.json"),
+        ("../sft_dataset/or_train.jsonl",  "../sft_dataset/or_map.json"),
+        ("../sft_dataset/tcy_val.jsonl",   "../sft_dataset/tcy_map.json"),
     ]
 
-    train_files = [f for f in file_paths if os.path.isfile(f)]
-    val_files = [f for f in val_file_paths if os.path.isfile(f)]
-    train_maps = [f for f in map_paths if os.path.isfile(f)]
+    tmp_dir = tempfile.mkdtemp(prefix="q2_splits_")
+    train_files = ["../en_sft_dataset/train.jsonl"]
+    val_files   = ["../en_sft_dataset/valid.jsonl"]
+    train_maps  = []
+    val_inv_maps = {}  # val_file_path -> inv_map dict, for evaluate_f1
+
+    for data_file, map_file in INDIC_FILES:
+        if not os.path.isfile(data_file):
+            continue
+        tr, vl = split_indic_file(data_file, tmp_dir)
+        train_files.append(tr)
+        val_files.append(vl)
+        if os.path.isfile(map_file):
+            train_maps.append(map_file)
+            with open(map_file, "r", encoding="utf-8") as mf:
+                fwd = json.load(mf)
+            val_inv_maps[vl] = {v: k for k, v in fwd.items()}
+
+    train_files = [f for f in train_files if os.path.isfile(f)]
+    val_files   = [f for f in val_files   if os.path.isfile(f)]
     print(f"Training files: {train_files}")
     print(f"Training maps: {train_maps}\n")
 
@@ -264,7 +295,7 @@ def main():
 
         # Switch to left-padding for generation
         tokenizer.padding_side = "left"
-        macro_f1, micro_f1 = evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens)
+        macro_f1, micro_f1 = evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, file_to_inv_map=val_inv_maps)
         tokenizer.padding_side = "right"
 
         print(f"\nEpoch {epoch}/{epochs} | Train Loss: {avg_loss:.4f} | Val Macro-F1: {macro_f1:.4f} | Val Micro-F1: {micro_f1:.4f}")
@@ -274,6 +305,8 @@ def main():
             model.save_pretrained(args.output_dir)
             tokenizer.save_pretrained(args.output_dir)
             print(f"\nSaved best model (macro_f1={macro_f1:.4f})")
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
