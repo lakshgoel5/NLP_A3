@@ -251,6 +251,15 @@ def main():
             total_loss += loss_val.item() * accumulation
             pbar.set_postfix(loss=f"{total_loss / step:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
 
+        # Flush any remaining gradients from a partial accumulation window
+        if step % accumulation != 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad()
+
         avg_loss = total_loss / len(train_loader)
 
         # Switch to left-padding for generation
