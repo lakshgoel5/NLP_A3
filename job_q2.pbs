@@ -17,18 +17,26 @@ cd "$BASE/Q2"
 echo "====== Training Q2 ======"
 bash train.sh ./output
 
+echo "====== Generating val splits (seed=42, same as training) ======"
+python -u "$BASE/make_val_splits.py" \
+    --files "$BASE/sft_dataset/hi_train.jsonl" \
+            "$BASE/sft_dataset/kn_train.jsonl" \
+            "$BASE/sft_dataset/or_train.jsonl" \
+            "$BASE/sft_dataset/tcy_val.jsonl"  \
+    --out_dir ./val_splits
+
 echo "====== Inference Q2 ======"
 bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"  ./output
-bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"  ./output
-bash infer.sh kn  "$BASE/sft_dataset/kn_train.jsonl"  ./output
-bash infer.sh or  "$BASE/sft_dataset/or_train.jsonl"  ./output
-bash infer.sh tcy "$BASE/sft_dataset/tcy_val.jsonl"   ./output
+bash infer.sh hi  ./val_splits/hi_train_val.jsonl      ./output
+bash infer.sh kn  ./val_splits/kn_train_val.jsonl      ./output
+bash infer.sh or  ./val_splits/or_train_val.jsonl      ./output
+bash infer.sh tcy ./val_splits/tcy_val_val.jsonl       ./output
 
 echo "====== Evaluation Q2 ======"
 python -u "$BASE/eval.py" ./output/output_en.jsonl  "$BASE/en_sft_dataset/valid.jsonl"
-python -u "$BASE/eval.py" ./output/output_hi.jsonl  "$BASE/sft_dataset/hi_train.jsonl"
-python -u "$BASE/eval.py" ./output/output_kn.jsonl  "$BASE/sft_dataset/kn_train.jsonl"
-python -u "$BASE/eval.py" ./output/output_or.jsonl  "$BASE/sft_dataset/or_train.jsonl"
-python -u "$BASE/eval.py" ./output/output_tcy.jsonl "$BASE/sft_dataset/tcy_val.jsonl"
+python -u "$BASE/eval.py" ./output/output_hi.jsonl  ./val_splits/hi_train_val.jsonl
+python -u "$BASE/eval.py" ./output/output_kn.jsonl  ./val_splits/kn_train_val.jsonl
+python -u "$BASE/eval.py" ./output/output_or.jsonl  ./val_splits/or_train_val.jsonl
+python -u "$BASE/eval.py" ./output/output_tcy.jsonl ./val_splits/tcy_val_val.jsonl
 
 echo "====== Q2 Done ======"
