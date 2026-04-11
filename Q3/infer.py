@@ -3,6 +3,10 @@ from typing import List
 
 import argparse
 
+SYSTEM_PROMPT_TEMPLATE = """You are a relation extraction system. Given a sentence and two entities, output the relation between them.
+You MUST output EXACTLY ONE label from the list below — nothing else, no explanation, no punctuation:
+{label_list}"""
+
 def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct") -> List[str]:
     """
     Takes a list of prompt strings and returns a list of generated text strings using vLLM.
@@ -32,27 +36,58 @@ def main():
     p.add_argument("--test_file", required=True)
     p.add_argument("--output_dir", default="./output")
 
+    #---Test time----
+    p.add_argument("--num_demos", type=int, default=8)
+    p.add_argument("--retrieval", choices=["similarity", "stratified", "random", "auto"], default="auto")
+
     args = p.parse_args()
 
+    if args.retrieval == "auto":
+        args.retrieval = "similarity" if args.lang in ("en", "hi") else "stratified"
+
+    print(f"[cfg] lang={args.lang}  retrieval={args.retrieval}  k={args.num_demos}")
+
     os.makedirs(args.output_dir, exist_ok=True)
+
+    #-------load eng data------
+
+    #-------load map data------
+
+    #--------A class that gets demos based on query---------
+
+    #--------read test and build prompts------
+    # get k demos using 
+    # format them in prompt
+
+
+    #-------Batch all prompts---------
+    # pack all prompts together for speed
+    # Calling it once with 2000 prompts is ~50× faster than calling it 2000 times with 1 prompt each. 
+
+    #--------Pass to VLLM-----------
+
+    
+    #-----Decode output and write to file-------------
+
+    
 
 
 
 if __name__ == "__main__":
     # List of input strings
-    my_prompts = [
-        "The capital of France is",
-        "Write a haiku about a GPU:",
-        "Explain the theory of relativity in one sentence:"
-    ]
+    # my_prompts = [
+    #     "The capital of France is",
+    #     "Write a haiku about a GPU:",
+    #     "Explain the theory of relativity in one sentence:"
+    # ]
     
-    # Get the outputs
-    results = generate_vllm_responses(my_prompts, model_name = "/home/scai/msr/aiy247541/scratch/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659")
+    # # Get the outputs
+    # results = generate_vllm_responses(my_prompts, model_name = "/home/scai/msr/aiy247541/scratch/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659")
     
-    # Print the results
-    for i, (prompt, response) in enumerate(zip(my_prompts, results)):
-        print(f"\n--- Prompt {i+1} ---")
-        print(f"Input: {prompt}")
-        print(f"Output: {response}")
+    # # Print the results
+    # for i, (prompt, response) in enumerate(zip(my_prompts, results)):
+    #     print(f"\n--- Prompt {i+1} ---")
+    #     print(f"Input: {prompt}")
+    #     print(f"Output: {response}")
 
     main()
