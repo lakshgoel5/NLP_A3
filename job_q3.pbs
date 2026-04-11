@@ -2,7 +2,7 @@
 #PBS -N Q3_ICL
 #PBS -P col772.cs1230848.course
 #PBS -l select=1:ncpus=8:ngpus=1:mem=32G:centos=skylake
-#PBS -l walltime=03:00:00
+#PBS -l walltime=01:00:00
 
 # Required for vllm + faiss-gpu environment
 module load compiler/gcc/11.2.0
@@ -35,9 +35,7 @@ bash infer.sh ./output
 echo "====== Evaluation Q3 ======"
 # Evaluate against whichever files infer.sh used (test if present, else train/val)
 for lang in hi kn or tcy; do
-    if   [ -f "$BASE/sft_dataset/${lang}_test.jsonl" ]; then
-        ref="$BASE/sft_dataset/${lang}_test.jsonl"
-    elif [ "$lang" = "tcy" ]; then
+    if [ "$lang" = "tcy" ]; then
         ref="$BASE/sft_dataset/tcy_val.jsonl"
     else
         ref="$BASE/sft_dataset/${lang}_train.jsonl"

@@ -152,9 +152,9 @@ Concatenate all four boundary tokens.
 This captures both the start and end context of each entity span.
 
 # Task 3
-The defining constraint of Task 3 is that there are no gradient updates; you cannot "train" or fine-tune the model. Instead, you must guide the model to the correct answer by providing high-quality instructions and examples within the input text itself. \
+The defining constraint of Task 3 is that there are no gradient updates; you cannot "train" or fine-tune the model. Instead, you must guide the model to the correct answer by providing high-quality instructions and examples within the input text itself.
 
-To succeed in this task, we need to focus on Prompt Engineering and Example Selection. \
+To succeed in this task, we need to focus on Prompt Engineering and Example Selection.
 
 Model can read 128k tokens.
 
