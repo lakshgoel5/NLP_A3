@@ -10,6 +10,8 @@ import json
 import argparse
 
 from transformers import AutoTokenizer
+from sentence_transformers import SentenceTransformer
+import faiss
 
 # What AutoTokenizer.from_pretrained(MODEL) does
 # It downloads (or loads from cache) the tokenizer that ships with Llama-3.1-8B-Instruct. A tokenizer is a small object (~5 MB of files: tokenizer.json, special_tokens_map.json, tokenizer_config.json) that knows two things:
@@ -75,11 +77,65 @@ class Retriever:
         self.embed_model = embed_model
         self.rng = random.Random(42)
 
-    def retrieve_batch(self, queries, k):
-        pass
+        self.by_label = {} # Group examples by Label
 
-    def retrieve(self, em1, em2, sent, k):
-        pass
+        for ex in demo_data:
+            label = ex["label"]
+            if label not in self.by_label:
+                self.by_label[label] = []
+            self.by_label[label].append(ex)
+
+        if retrieval_type == "similarity":
+            self.build_faiss_index(embed_model)
+
+    def build_faiss_index(self, embed_model):
+        print(f"[retriever] loading embedder: {embed_model}")
+        self.embedder = SentenceTransformer(embed_model)
+
+        texts = [f"{ex['em1Text']} {ex['em2Text']} {ex['sentText']}" for ex in self.demo_data]
+        print(f"[retriever] encoding {len(texts)} pool texts...")
+        embs = self.embedder.encode(
+            texts, batch_size=512, show_progress_bar=True,
+            normalize_embeddings=True, convert_to_numpy=True,
+        ).astype(np.float32)
+
+        self.index = faiss.IndexFlatIP(embs.shape[1])
+        self.index.add(embs)
+        print(f"[retriever] index built: {self.index.ntotal} vectors, dim={embs.shape[1]}")
+
+    def retrieve_batch(self, queries, k):
+        if self.retrieval_type == "similarity":
+            return self.retrieve_similarity_batch(queries, k)
+        elif self.retrieval_type == "stratified":
+            return [self.retrieve_stratified(k) for _ in queries]
+        else:
+            return [self.rng.sample(self.demo_data, k) for _ in queries]
+
+    def retrieve_stratified(self, k):
+
+        labels = list(self.by_label.keys())
+        self.rng.shuffle(labels)
+        demos = []
+        i = 0
+
+        while len(demos) < k:
+            lbl = labels[i % len(labels)]
+            demos.append(self.rng.choice(self.by_label[lbl]))
+            i += 1
+
+        return demos
+
+    def retrieve_similarity_batch(self, queries, k):
+        texts = [f"{em1} {em2} {sent}" for em1, em2, sent in queries]
+
+        q_embs = self.embedder.encode(
+            texts, batch_size=512, normalize_embeddings=True,
+            convert_to_numpy=True, show_progress_bar=True,
+        ).astype(np.float32)
+
+        _, idxs = self.index.search(q_embs, k)  # shape (N, k)
+        
+        return [[self.demo_data[i] for i in row] for row in idxs]
 
 def load_demo_data(file_path):
 
@@ -195,6 +251,8 @@ def main():
 
     # Expensive work on entire batch rather than on individual query
     demos_per_query = retriever.retrieve_batch(queries, args.num_demos)
+
+    print(f"[debug] demos for query 0: {[d['label'] for d in demos_per_query[0]]}")
 
     prompts = []
     # Make prompts using the retrieved demos
