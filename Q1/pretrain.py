@@ -135,10 +135,10 @@ def train(model, loader, optimizer, scheduler, scaler, device, epochs, accumulat
                 loss = out.loss
 
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            if step % accumulation != 0:
+            if step % accumulation == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()

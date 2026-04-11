@@ -4,6 +4,8 @@
 #PBS -l select=1:ncpus=8:ngpus=1:mem=32G:centos=skylake
 #PBS -l walltime=01:00:00
 
+set -e
+
 # Required for vllm + faiss-gpu environment
 module load compiler/gcc/11.2.0
 
