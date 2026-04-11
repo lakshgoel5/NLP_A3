@@ -1,8 +1,8 @@
 #!/bin/bash
-#PBS -N Q2_baseline
+#PBS -N Q2_post_adapt
 #PBS -P col772.cs1230848.course
 #PBS -l select=1:ncpus=4:ngpus=1:centos=skylake
-#PBS -l walltime=05:00:00
+#PBS -l walltime=10:00:00
 
 export PATH=/home/apps/centos7/JAX_MD/bin:$PATH
 export HF_TOKEN="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"
@@ -15,10 +15,10 @@ BASE=/home/cse/btech/cs1230848/NLP_A3
 cd "$BASE/Q2"
 
 OUTBASE=./output
-FINAL_MODEL="$OUTBASE/re_finetuned_b"
+FINAL_MODEL="$OUTBASE/re_retuned_post"
 
-echo "====== Training Q2 (baseline) ======"
-bash train.sh "$OUTBASE" baseline
+echo "====== Training Q2 (post_adapt) ======"
+bash train.sh "$OUTBASE" post_adapt
 
 echo "====== Generating val splits ======"
 python -u "$BASE/make_val_splits.py" \
