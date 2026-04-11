@@ -1,13 +1,42 @@
 # from vllm import LLM, SamplingParams
 from typing import List
 import os
+import random
+from typing import List, Dict, Tuple
+import numpy as np
 from tqdm import tqdm
 import json
 
 import argparse
 
+from transformers import AutoTokenizer
+
+# What AutoTokenizer.from_pretrained(MODEL) does
+# It downloads (or loads from cache) the tokenizer that ships with Llama-3.1-8B-Instruct. A tokenizer is a small object (~5 MB of files: tokenizer.json, special_tokens_map.json, tokenizer_config.json) that knows two things:
+
+# How to turn text into token IDs and back — the vocabulary and merge rules.
+# How to format a list of chat messages into the exact string the model was trained to expect — the chat template.
+
+# Llama-3.1-Instruct wasn't trained on plain text. It was trained on text formatted with specific special tokens that mark where the system prompt starts, where each user turn begins, where the assistant should respond, and so on. 
+
+# messages = [
+#     {"role": "system",    "content": "You are a relation extraction system..."},
+#     {"role": "user",      "content": "Entity 1: Paris\nEntity 2: France\n..."},
+#     {"role": "assistant", "content": "/location/country/capital"},
+#     {"role": "user",      "content": "Entity 1: ...\n..."},  # the query
+# ]
+
+# prompt_string = tokenizer.apply_chat_template(
+#     messages,
+#     tokenize=False,            # we want the string, not token IDs
+#     add_generation_prompt=True, # append the "assistant turn starts here" tokens
+# )
+
 TRAIN_FILE = "../en_sft_dataset/train.jsonl" 
 MAP_DIR = "../sft_dataset"
+MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+rng = random.Random(42)
 
 SYSTEM_PROMPT_TEMPLATE = """You are a relation extraction system. Given a sentence and two entities, output the relation between them.
 You MUST output EXACTLY ONE label from the list below — nothing else, no explanation, no punctuation:
@@ -74,6 +103,24 @@ def load_label_map(lang: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def build_prompt(tokenizer, system_prompt, demos, em1, em2, sent):
+    # a prompt for each sample to be inferred
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # add demos as few-shot examples
+    for d in demos:
+        example = (f"Entity 1: {d['em1Text']}\nEntity 2: {d['em2Text']}\nSentence: {d['sentText']}\nRelation:")
+        messages.append({"role": "user", "content": example})
+        messages.append({"role": "assistant", "content": d["label"]})
+
+    # add the query
+    query = f"Entity 1: {em1}\nEntity 2: {em2}\nSentence: {sent}\nRelation:"
+    messages.append({"role": "user", "content": query})
+
+    # apply chat template
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return prompt
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lang", required=True, choices=["en", "hi", "kn", "or", "tcy"])
@@ -106,11 +153,37 @@ def main():
     #--------A class that gets demos based on query---------
     #LLM outputs eng labels, so need translation
     forward_map = load_label_map(args.lang)
+    print(f"[map] {len(forward_map)} entries for {args.lang}")
+    print(f"[map] Entry sample: {list(forward_map.items())[0]}")
 
     #--------read test and build prompts------
+    #System prompt
+    all_labels = sorted({e["label"] for e in read_data})
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(label_list="\n".join(all_labels))
+
+    prompts = []
+    index_map = [] # for later mapping back vllm output for nesting data
+
     # get k demos using 
     # format them in prompt
+    for sent_idx, data in enumerate(tqdm(test_data, desc="build prompts")):
+        sent = data["sentText"]
+        for m_idx, rm in enumerate(data["relationMentions"]):
+            em1 = rm["em1Text"]
+            em2 = rm["em2Text"]
 
+            demos = rng.sample(read_data, args.num_demos) #REPLACE LATER
+
+            prompt = build_prompt(tokenizer, system_prompt, demos, em1, em2, sent)
+
+            prompts.append(prompt)
+            index_map.append((sent_idx, m_idx))
+
+    # test_data[sent_idx]["relationMentions"][m_idx] ↔ prompts[i]. 
+    # When vllm returns a flat list, zip(index_map, predictions) gives you back the (sent_idx, m_idx) address for each one.
+
+    print(f"[prompts] built {len(prompts)} prompts")
+    print(f"[prompts] sample:\n{prompts[0][:800]}...\n")
 
     #-------Batch all prompts---------
     # pack all prompts together for speed
