@@ -7,8 +7,8 @@ from peft import get_peft_model, LoraConfig, TaskType, AutoPeftModelForCausalLM
 # We extract entity marker positions from the last hidden layer and feed to a classifier.
 
 
-def load_base_model():
-    model_name = "Qwen/Qwen2.5-1.5B"
+def load_base_model(model_path=None):
+    model_name = model_path if model_path else "Qwen/Qwen2.5-1.5B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     # Qwen2.5 uses eos as pad by default; set explicitly
