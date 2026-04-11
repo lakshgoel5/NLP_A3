@@ -34,7 +34,10 @@ from transformers import AutoTokenizer
 
 TRAIN_FILE = "../en_sft_dataset/train.jsonl" 
 MAP_DIR = "../sft_dataset"
+
 MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
 tokenizer = AutoTokenizer.from_pretrained(MODEL)
 rng = random.Random(42)
 
@@ -64,6 +67,19 @@ def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Me
     generated_texts = [output.outputs[0].text for output in outputs]
 
     return generated_texts
+
+class Retriever:
+    def __init__(self, demo_data, retrieval_type, embed_model):
+        self.demo_data = demo_data
+        self.retrieval_type = retrieval_type
+        self.embed_model = embed_model
+        self.rng = random.Random(42)
+
+    def retrieve_batch(self, queries, k):
+        pass
+
+    def retrieve(self, em1, em2, sent, k):
+        pass
 
 def load_demo_data(file_path):
 
@@ -161,7 +177,9 @@ def main():
     all_labels = sorted({e["label"] for e in read_data})
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(label_list="\n".join(all_labels))
 
-    prompts = []
+    retriever = Retriever(read_data, args.retrieval, embed_model=EMBED_MODEL)
+
+    queries = []
     index_map = [] # for later mapping back vllm output for nesting data
 
     # get k demos using 
@@ -169,18 +187,19 @@ def main():
     for sent_idx, data in enumerate(tqdm(test_data, desc="build prompts")):
         sent = data["sentText"]
         for m_idx, rm in enumerate(data["relationMentions"]):
-            em1 = rm["em1Text"]
-            em2 = rm["em2Text"]
-
-            demos = rng.sample(read_data, args.num_demos) #REPLACE LATER
-
-            prompt = build_prompt(tokenizer, system_prompt, demos, em1, em2, sent)
-
-            prompts.append(prompt)
+            queries.append((rm["em1Text"], rm["em2Text"], sent))
             index_map.append((sent_idx, m_idx))
 
     # test_data[sent_idx]["relationMentions"][m_idx] ↔ prompts[i]. 
     # When vllm returns a flat list, zip(index_map, predictions) gives you back the (sent_idx, m_idx) address for each one.
+
+    # Expensive work on entire batch rather than on individual query
+    demos_per_query = retriever.retrieve_batch(queries, args.num_demos)
+
+    prompts = []
+    # Make prompts using the retrieved demos
+    for (em1, em2, sent), demos in zip(queries, demos_per_query):
+        prompts.append(build_prompt(tokenizer, system_prompt, demos, em1, em2, sent))
 
     print(f"[prompts] built {len(prompts)} prompts")
     print(f"[prompts] sample:\n{prompts[0][:800]}...\n")
