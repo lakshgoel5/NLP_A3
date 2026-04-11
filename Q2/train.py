@@ -129,6 +129,7 @@ def main():
     p.add_argument("--output_dir", default="./output")
     p.add_argument("--config_path", default="./config.json")
     p.add_argument("--pretrained_dir", default=None, help="Path to CPT-adapted model from pretrain.py")
+    p.add_argument("--epochs", type=int, default=None, help="Override epochs from config (useful for short re-tune)")
     args = p.parse_args()
 
     with open(args.config_path, "r") as f:
@@ -146,7 +147,7 @@ def main():
     print(f"Device: {device}\n")
 
     # ---------- Hyperparameters ----------
-    epochs = config["epochs"]
+    epochs = args.epochs if args.epochs is not None else config["epochs"]
     batch_size = config["batch_size"]
     lr = config["lr"]
     max_len = config["max_len"]
