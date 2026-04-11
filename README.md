@@ -112,11 +112,16 @@ All parameters have sensible defaults so the shortest invocations are:
 
 `pretrain.py` streams Wikipedia articles for the target languages via the
 Hugging Face `datasets` API (`wikimedia/wikipedia`), chunks them into
-fixed-length windows, and runs standard causal-LM training on the base
-Qwen2.5-1.5B model (no LoRA — full weights trained with a small learning
-rate).  The resulting checkpoint is a plain `AutoModelForCausalLM` that
-`train.py` loads via `--pretrained_dir` before wrapping in LoRA for RE
+fixed-length windows, and runs **LoRA-based** causal-LM training (base weights
+frozen, only small adapter matrices updated).  After training the adapters are
+merged into the base weights with `merge_and_unload()` and saved as a plain
+`AutoModelForCausalLM` checkpoint.  `train.py` then loads this merged
+checkpoint via `--pretrained_dir` and wraps it in a fresh LoRA config for RE
 fine-tuning.
+
+Using LoRA for the adaptation stage (rather than full-weight updates) is
+faster, uses less GPU memory, and reduces catastrophic forgetting of the base
+model's multilingual knowledge.
 
 For `post_adapt`, `pretrain.py` detects that the input checkpoint is a PEFT
 adapter (by checking for `adapter_config.json`), merges the LoRA weights into

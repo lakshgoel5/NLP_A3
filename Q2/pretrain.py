@@ -1,16 +1,20 @@
 """
-pretrain.py — Continued CLM pretraining on unlabeled Wikipedia text.
+pretrain.py — LoRA-based continued CLM pretraining on unlabeled Wikipedia text.
+
+Uses LoRA adapters (via PEFT) instead of full weight updates: the base model
+is frozen, only the small adapter matrices are trained, then merged and
+unloaded before saving.  This is faster, uses less memory, and is more robust
+against catastrophic forgetting than full fine-tuning.
 
 Used for both "pre-adapt" and "post-adapt" pipelines:
   - pre_adapt:  run before RE fine-tuning on the base Qwen model
   - post_adapt: run after RE fine-tuning, starting from the LoRA-merged checkpoint
 
-Saves a plain AutoModelForCausalLM checkpoint that train.py can load via
---pretrained_dir.
+Saves a plain AutoModelForCausalLM checkpoint (adapters merged) that train.py
+can load via --pretrained_dir.
 """
 
 import os
-import json
 import random
 import argparse
 from functools import partial
@@ -26,6 +30,7 @@ except ImportError:
 
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedule_with_warmup
+from peft import get_peft_model, LoraConfig, TaskType
 from datasets import load_dataset
 
 
@@ -110,12 +115,11 @@ def collate_fn(batch, pad_id):
 
 def load_model_for_pretraining(model_path):
     """
-    Load a causal-LM model for continued pretraining.
+    Load the base causal-LM model for LoRA-based continued pretraining.
 
     If the checkpoint is a PEFT / LoRA adapter (contains adapter_config.json),
-    the adapters are merged into the base weights and unloaded so that the
-    resulting model is a plain AutoModelForCausalLM — making it easy to save
-    and reload later with AutoModelForCausalLM.from_pretrained.
+    the adapters are first merged into the base weights so we always start
+    from a plain AutoModelForCausalLM before wrapping with fresh LoRA adapters.
     """
     model_name = model_path if model_path else "Qwen/Qwen2.5-1.5B"
 
@@ -125,7 +129,7 @@ def load_model_for_pretraining(model_path):
 
     adapter_cfg = os.path.join(model_name, "adapter_config.json") if model_path else None
     if adapter_cfg and os.path.isfile(adapter_cfg):
-        # PEFT / LoRA adapter — merge before training
+        # PEFT / LoRA adapter checkpoint — merge adapters before wrapping with new ones
         from peft import AutoPeftModelForCausalLM
 
         print(f"  [MLM] Detected LoRA adapter at '{model_name}' — merging weights …")
@@ -144,12 +148,29 @@ def load_model_for_pretraining(model_path):
     return tokenizer, model
 
 
+def apply_lora(model, lora_rank, lora_alpha, lora_dropout):
+    """Wrap the base model with LoRA adapters for CLM continued pretraining."""
+    lora_config = LoraConfig(
+        r=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    return model
+
+
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
 def train_clm(model, tokenizer, loader, device, epochs, lr, accumulation_steps, warmup_ratio):
-    optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    # Only optimize the trainable LoRA parameters
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = AdamW(trainable_params, lr=lr, weight_decay=0.01)
 
     if device.type == "cuda":
         scaler = GradScaler("cuda")
@@ -214,7 +235,7 @@ def train_clm(model, tokenizer, loader, device, epochs, lr, accumulation_steps, 
 
 def main():
     p = argparse.ArgumentParser(
-        description="Continued CLM pretraining on unlabeled Wikipedia text."
+        description="LoRA-based continued CLM pretraining on unlabeled Wikipedia text."
     )
     p.add_argument("--output_dir", default="./mlm_adapted",
                    help="Where to save the adapted model checkpoint.")
@@ -231,6 +252,12 @@ def main():
     p.add_argument("--accumulation_steps", type=int, default=4)
     p.add_argument("--warmup_ratio", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--lora_rank", type=int, default=16,
+                   help="LoRA rank for CLM adaptation.")
+    p.add_argument("--lora_alpha", type=int, default=32,
+                   help="LoRA alpha for CLM adaptation.")
+    p.add_argument("--lora_dropout", type=float, default=0.05,
+                   help="LoRA dropout for CLM adaptation.")
     args = p.parse_args()
 
     random.seed(args.seed)
@@ -248,9 +275,13 @@ def main():
     langs = [l.strip() for l in args.languages.split(",") if l.strip()]
     print(f"[MLM Pretraining] Languages: {langs}")
 
-    # Load model
+    # Load base model (merges any prior LoRA if present)
     print(f"[MLM Pretraining] Loading model from: {args.start_from or 'Qwen/Qwen2.5-1.5B'}")
-    tokenizer, model = load_model_for_pretraining(args.start_from)
+    tokenizer, base_model = load_model_for_pretraining(args.start_from)
+
+    # Wrap with fresh LoRA adapters for continued pretraining
+    print(f"[MLM Pretraining] Applying LoRA (r={args.lora_rank}, alpha={args.lora_alpha}) …")
+    model = apply_lora(base_model, args.lora_rank, args.lora_alpha, args.lora_dropout)
     model = model.to(device)
 
     # Fetch corpus
@@ -267,7 +298,7 @@ def main():
         pin_memory=(device.type == "cuda"),
     )
 
-    # Train
+    # Train only LoRA parameters
     train_clm(
         model, tokenizer, loader, device,
         epochs=args.epochs,
@@ -276,11 +307,14 @@ def main():
         warmup_ratio=args.warmup_ratio,
     )
 
-    # Save
+    # Merge LoRA back into base weights and save as a plain AutoModelForCausalLM
+    print("\n[MLM Pretraining] Merging LoRA adapters into base model …")
+    merged_model = model.merge_and_unload()
+
     os.makedirs(args.output_dir, exist_ok=True)
-    model.save_pretrained(args.output_dir)
+    merged_model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    print(f"\n[MLM Pretraining] Saved adapted model → {args.output_dir}")
+    print(f"[MLM Pretraining] Saved merged model → {args.output_dir}")
 
 
 if __name__ == "__main__":
