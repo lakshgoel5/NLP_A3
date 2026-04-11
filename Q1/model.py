@@ -10,9 +10,9 @@ SPECIAL_TOKENS = ["[E1]", "[/E1]", "[E2]", "[/E2]"]
 # We extract entity marker positions from the last hidden layer and feed to a classifier.
 
 
-def load_base_model():
-    model_name = "Qwen/Qwen2.5-1.5B"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+def load_base_model(model_path=None):
+    model_name = model_path if model_path else "Qwen/Qwen2.5-1.5B"
+    tokenizer = AutoTokenizer.from_pretrained(model_name) # The from_pretrained() method is designed to handle both a model ID from the Hugging Face Hub (e.g., "bert-base-uncased") and a direct path to a directory on your machine
 
     # Add special tokens
     tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})

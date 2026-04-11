@@ -74,6 +74,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--output_dir", default="./output")
     p.add_argument("--config_path", default="./config.json")
+    p.add_argument("--pretrained_dir", default=None, help="Path to CPT-adapted model from pretrain.py")
     args = p.parse_args()
 
     with open(args.config_path, "r") as f:
@@ -132,7 +133,7 @@ def main():
     num_classes = NUM_CLASSES
 
     #--------model-------
-    tokenizer, base_model = load_base_model()
+    tokenizer, base_model = load_base_model(model_path=args.pretrained_dir)
     base_model = lora(base_model, config["lora_rank"], config["lora_alpha"], config["lora_dropout"])
 
     # I need to add extra layer of classifier above base model, and make my forward function accept extra tokens
