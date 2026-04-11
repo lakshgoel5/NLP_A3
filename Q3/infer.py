@@ -1,7 +1,13 @@
-from vllm import LLM, SamplingParams
+# from vllm import LLM, SamplingParams
 from typing import List
+import os
+from tqdm import tqdm
+import json
 
 import argparse
+
+TRAIN_FILE = "../en_sft_dataset/train.jsonl" 
+MAP_DIR = "../sft_dataset"
 
 SYSTEM_PROMPT_TEMPLATE = """You are a relation extraction system. Given a sentence and two entities, output the relation between them.
 You MUST output EXACTLY ONE label from the list below — nothing else, no explanation, no punctuation:
@@ -30,6 +36,44 @@ def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Me
 
     return generated_texts
 
+def load_demo_data(file_path):
+
+    data_list = []
+
+    ##SUBMISSION reading line wise
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    for data in tqdm([json.loads(l) for l in lines if l.strip()], desc=file_path.split("/")[-1], leave=False): #if l.strip() A filter that skips empty lines or lines containing only whitespace
+        sent = data["sentText"]
+        for rm in data.get("relationMentions", []):
+            em1 = rm["em1Text"]
+            em2 = rm["em2Text"]
+            raw_label = rm["label"]
+            if not raw_label or raw_label == "NA":
+                continue
+
+            data_list.append({
+                "sentText": sent,
+                "em1Text": em1,
+                "em2Text": em2,
+                "label": raw_label
+            })
+
+    return data_list
+
+def load_test_data(file_path):
+    # Nested test data
+    with open(file_path, "r", encoding="utf-8") as f:
+        return [json.loads(l) for l in f if l.strip()]
+
+def load_label_map(lang: str) -> dict:
+    if lang == "en":
+        return {}
+    path = os.path.join(MAP_DIR, f"{lang}_map.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lang", required=True, choices=["en", "hi", "kn", "or", "tcy"])
@@ -50,10 +94,18 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     #-------load eng data------
+    read_data = load_demo_data(TRAIN_FILE)
+    print(f"[demo] {len(read_data)} examples, {len(set(e['label'] for e in read_data))} unique labels")
+    print(f"[demo] sample: {read_data[0]}")
 
-    #-------load map data------
+
+    #-------load test data------
+    test_data = load_test_data(args.test_file)
+    print(f"[test] {len(test_data)} sentences")
 
     #--------A class that gets demos based on query---------
+    #LLM outputs eng labels, so need translation
+    forward_map = load_label_map(args.lang)
 
     #--------read test and build prompts------
     # get k demos using 
