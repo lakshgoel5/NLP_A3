@@ -53,3 +53,72 @@ Results (to be filled after run):
 **Oriya and Tulu.** These are the hard languages — very little labeled data and no large pre-training corpus available (unlike Hindi/Kannada which have Wikipedia). They are essentially zero-shot languages. The hope is that the model has seen enough multilingual text during its own pre-training (Qwen2.5 is trained on multilingual data) that it can generalize. We still include the small or/tcy training sets in Stage 2 to give it some signal.
 
 **Post-processing.** Generation isn't guaranteed to produce exactly a valid label. The post-processing does: (1) try to JSON-parse the output and extract the "label" key, (2) if that fails, search for any known label string occurring anywhere in the output and pick the longest match, (3) if nothing matches, default to NA. The substring fallback handles cases where the model wraps extra text around the JSON.
+
+---
+
+## Q2 — Adaptation order experiments (language adaptation)
+
+Three training modes are available via `Q2/train.sh`.  All modes share the
+same `Q2/config.json` for RE fine-tuning hyper-parameters.  Intermediate
+checkpoints are written under the chosen `--output_dir`.
+
+### Checkpoint paths
+
+| Mode | Stage | Artifact |
+|------|-------|----------|
+| `baseline` | RE fine-tune | `<output_dir>/re_finetuned/` |
+| `pre_adapt` | MLM adapt | `<output_dir>/mlm_adapted/` |
+| `pre_adapt` | RE fine-tune | `<output_dir>/re_finetuned/` |
+| `post_adapt` | RE fine-tune | `<output_dir>/re_finetuned/` |
+| `post_adapt` | MLM adapt | `<output_dir>/mlm_adapted/` |
+| `post_adapt` | RE re-tune | `<output_dir>/re_retuned/` |
+
+### Commands
+
+```bash
+cd Q2
+
+# 1. Baseline — English supervised RE fine-tuning only (original behaviour)
+./train.sh --mode baseline --output_dir ./exp_baseline
+
+# 2. Pre-adapt — MLM on unlabeled hi/kn Wikipedia THEN RE fine-tuning
+./train.sh --mode pre_adapt \
+           --output_dir ./exp_pre \
+           --languages hi,kn \
+           --max_samples 5000 \
+           --mlm_epochs 1 \
+           --mlm_lr 1e-5 \
+           --mlm_batch_size 4
+
+# 3. Post-adapt — RE fine-tuning THEN MLM on hi/kn THEN short RE re-tune
+./train.sh --mode post_adapt \
+           --output_dir ./exp_post \
+           --languages hi,kn \
+           --max_samples 5000 \
+           --mlm_epochs 1 \
+           --mlm_lr 1e-5 \
+           --mlm_batch_size 4 \
+           --retune_epochs 1
+```
+
+All parameters have sensible defaults so the shortest invocations are:
+```bash
+./train.sh                        # baseline (old default)
+./train.sh --mode pre_adapt
+./train.sh --mode post_adapt
+```
+
+### How it works
+
+`pretrain.py` streams Wikipedia articles for the target languages via the
+Hugging Face `datasets` API (`wikimedia/wikipedia`), chunks them into
+fixed-length windows, and runs standard causal-LM training on the base
+Qwen2.5-1.5B model (no LoRA — full weights trained with a small learning
+rate).  The resulting checkpoint is a plain `AutoModelForCausalLM` that
+`train.py` loads via `--pretrained_dir` before wrapping in LoRA for RE
+fine-tuning.
+
+For `post_adapt`, `pretrain.py` detects that the input checkpoint is a PEFT
+adapter (by checking for `adapter_config.json`), merges the LoRA weights into
+the base model, then continues CLM training — so the adaptation always starts
+from a full model regardless of where the checkpoint came from.
