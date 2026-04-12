@@ -27,20 +27,41 @@ LANG_CONFIGS = {
 
 
 def load_base_model(pretrained_dir=None):
-    model_name = MODEL_NAME
-    if pretrained_dir:
-        model_name = pretrained_dir
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # Detect whether pretrained_dir is a PEFT adapter checkpoint (from Q1 train.py).
+    # Q1 train.py saves via model.base_model.save_pretrained(), which produces PEFT adapter
+    # weights against AutoModel (layers at "layers.X."). pretrain.py needs AutoModelForCausalLM
+    # (layers at "model.layers.X."), so we must merge the adapter into AutoModel first, then
+    # copy the merged transformer body into AutoModelForCausalLM.
+    if pretrained_dir and os.path.isfile(os.path.join(pretrained_dir, "adapter_config.json")):
+        from peft import PeftModel as _PeftModel
+        from transformers import AutoModel as _AutoModel
 
-    # Qwen2.5 uses eos as pad by default; set explicitly
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_dir)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        # Load AutoModel base (matches how the adapter was originally trained)
+        base = _AutoModel.from_pretrained(MODEL_NAME, dtype=torch.float16)
+        base.resize_token_embeddings(len(tokenizer))
+        peft_m = _PeftModel.from_pretrained(base, pretrained_dir)
+        merged = peft_m.merge_and_unload()  # merged AutoModel, keys: "layers.X."
+
+        # Copy merged transformer body into AutoModelForCausalLM (needed for CLM loss)
+        causal = AutoModelForCausalLM.from_pretrained(MODEL_NAME, dtype=torch.float16)
+        causal.model.load_state_dict(merged.state_dict(), strict=False)
+        causal.resize_token_embeddings(len(tokenizer))
+        del merged, peft_m, base
+        return tokenizer, causal
+
+    model_name = MODEL_NAME if pretrained_dir is None else pretrained_dir
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        dtype=torch.float16, # save memory # DESIGN (bfloat16 might be stable on A100)
+        dtype=torch.float16,
     )
-
     return tokenizer, model
 
 # freeze everything, inject tiny trainable matrices at specific places
@@ -51,7 +72,7 @@ def lora(model, lora_rank, lora_alpha, lora_dropout):
         lora_alpha=lora_alpha, #DESIGN Try sqrt(2)*r, 2*r
         lora_dropout=lora_dropout, #DESIGN 0.05-0.1
         # DESIGN: Q1 only used q_proj+v_proj (feature extraction), generation benefits from k_proj+o_proj too
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         bias="none", #DESIGN "lora_only" or "all" can sometimes improve performance
         task_type=TaskType.CAUSAL_LM, #TaskType.CAUSAL_LM is a configuration constant used in the Hugging Face PEFT (Parameter-Efficient Fine-Tuning) library to specify that a model is being used for Causal Language Modeling.
     )
@@ -196,6 +217,11 @@ def main():
     # ---------- Data ----------
     langs = config["langs"]
     texts = load_wiki_texts(langs, config["max_samples_per_lang"], seed=config["seed"])
+    if not texts:
+        print("\nERROR: No Wikipedia articles loaded for any language.")
+        print("The cluster is likely blocking HuggingFace. Set HF_DATASETS_OFFLINE=1")
+        print("and ensure the dataset is cached, or pre-download on a machine with access.")
+        raise SystemExit(1)
     dataset = IndicCLMDataset(texts, tokenizer, chunk_size=config["chunk_size"])
     train_loader = DataLoader(
         dataset,

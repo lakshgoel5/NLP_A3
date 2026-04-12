@@ -51,7 +51,7 @@ def lora(model, lora_rank, lora_alpha, lora_dropout):
         lora_alpha=lora_alpha, #DESIGN Try sqrt(2)*r, 2*r
         lora_dropout=lora_dropout, #DESIGN 0.05-0.1
         # DESIGN: Q1 only used q_proj+v_proj (feature extraction), generation benefits from k_proj+o_proj too
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         bias="none", #DESIGN "lora_only" or "all" can sometimes improve performance
         task_type=TaskType.CAUSAL_LM, #TaskType.CAUSAL_LM is a configuration constant used in the Hugging Face PEFT (Parameter-Efficient Fine-Tuning) library to specify that a model is being used for Causal Language Modeling.
     )
