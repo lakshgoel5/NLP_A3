@@ -1,7 +1,8 @@
-# from vllm import LLM, SamplingParams
+from vllm import LLM, SamplingParams
 from typing import List
 import os
 import random
+import difflib
 from typing import List, Dict, Tuple
 import numpy as np
 from tqdm import tqdm
@@ -40,35 +41,49 @@ MAP_DIR = "../sft_dataset"
 MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
+ALL_LABELS = [
+    "NA",
+    "/business/company/advisors",
+    "/business/company/founders",
+    "/business/company/industry",
+    "/business/company/major_shareholders",
+    "/business/company/place_founded",
+    "/business/company_shareholder/major_shareholder_of",
+    "/business/person/company",
+    "/location/administrative_division/country",
+    "/location/country/administrative_divisions",
+    "/location/country/capital",
+    "/location/location/contains",
+    "/location/neighborhood/neighborhood_of",
+    "/people/deceased_person/place_of_death",
+    "/people/ethnicity/geographic_distribution",
+    "/people/ethnicity/people",
+    "/people/person/children",
+    "/people/person/ethnicity",
+    "/people/person/nationality",
+    "/people/person/place_lived",
+    "/people/person/place_of_birth",
+    "/people/person/profession",
+    "/people/person/religion",
+    "/sports/sports_team/location",
+    "/sports/sports_team_location/teams",
+]
+
 rng = random.Random(42)
 
 SYSTEM_PROMPT_TEMPLATE = """You are a relation extraction system. Given a sentence and two entities, output the relation between them.
 You MUST output EXACTLY ONE label from the list below — nothing else, no explanation, no punctuation:
 {label_list}"""
 
-def generate_vllm_responses(prompts: List[str], model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct") -> List[str]:
-    """
-    Takes a list of prompt strings and returns a list of generated text strings using vLLM.
-    """
-    # 1. Initialize the LLM (This loads the model weights into GPU memory)
-    print(f"Loading model '{model_name}'...")
-    llm = LLM(model=model_name, dtype="float16", trust_remote_code=True, max_model_len=8192)
-
-    # 2. Define sampling parameters
-    # You can tweak temperature, max_tokens, top_p, etc. here.
-    sampling_params = SamplingParams(temperature=0.7, max_tokens=1024)
-
-    # 3. Run batch generation
-    # vLLM automatically handles batching the prompts for maximum GPU throughput
-    print("Generating responses...")
-    outputs = llm.generate(prompts, sampling_params)
-
-    # 4. Extract the text from the vLLM RequestOutput objects
-    # outputs[0] refers to the best completion (if you generated multiple completions per prompt)
-    generated_texts = [output.outputs[0].text for output in outputs]
-
-    return generated_texts
+def closest_label(pred: str, valid_labels: list) -> str:
+    pred = pred.strip()
+    if pred in valid_labels:
+        return pred
+    for label in valid_labels:
+        if pred.startswith(label):
+            return label
+    matches = difflib.get_close_matches(pred, valid_labels, n=1, cutoff=0.0)
+    return matches[0] if matches else "NA"
 
 class Retriever:
     def __init__(self, demo_data, retrieval_type, embed_model):
@@ -137,7 +152,7 @@ class Retriever:
         
         return [[self.demo_data[i] for i in row] for row in idxs]
 
-def load_demo_data(file_path):
+def load_demo_data(file_path, inv_label_map=None):
 
     data_list = []
 
@@ -152,6 +167,10 @@ def load_demo_data(file_path):
             em2 = rm["em2Text"]
             raw_label = rm["label"]
             if not raw_label or raw_label == "NA":
+                continue
+            if inv_label_map:
+                raw_label = inv_label_map.get(raw_label, raw_label)
+            if raw_label not in ALL_LABELS:
                 continue
 
             data_list.append({
@@ -206,17 +225,32 @@ def main():
     args = p.parse_args()
 
     if args.retrieval == "auto":
-        args.retrieval = "similarity" if args.lang in ("en", "hi") else "stratified"
+        args.retrieval = "similarity" if args.lang in ("en", "hi", "kn") else "stratified"
 
+    model_name = MODEL
     print(f"[cfg] lang={args.lang}  retrieval={args.retrieval}  k={args.num_demos}")
+    print(f"[cfg] model={model_name}")
 
     os.makedirs(args.output_dir, exist_ok=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     #-------load eng data------
     read_data = load_demo_data(TRAIN_FILE)
     print(f"[demo] {len(read_data)} examples, {len(set(e['label'] for e in read_data))} unique labels")
-    print(f"[demo] sample: {read_data[0]}")
 
+    # For languages with labeled training data, add their examples to the demo pool.
+    # This gives the similarity retriever in-language examples to match against.
+    if args.lang in ("hi", "kn"):
+        indic_train = os.path.join(MAP_DIR, f"{args.lang}_train.jsonl")
+        indic_map_path = os.path.join(MAP_DIR, f"{args.lang}_map.json")
+        if os.path.isfile(indic_train) and os.path.isfile(indic_map_path):
+            with open(indic_map_path, "r", encoding="utf-8") as f:
+                fwd = json.load(f)
+            inv_map = {v: k for k, v in fwd.items()}
+            indic_demos = load_demo_data(indic_train, inv_label_map=inv_map)
+            read_data.extend(indic_demos)
+            print(f"[demo] added {len(indic_demos)} {args.lang} examples to total {len(read_data)}")
 
     #-------load test data------
     test_data = load_test_data(args.test_file)
@@ -229,9 +263,9 @@ def main():
     print(f"[map] Entry sample: {list(forward_map.items())[0]}")
 
     #--------read test and build prompts------
-    #System prompt
-    all_labels = sorted({e["label"] for e in read_data})
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(label_list="\n".join(all_labels))
+    # Use ALL_LABELS directly so every valid label appears in the prompt,
+    # even if a rare label has zero examples in the training pool.
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(label_list="\n".join(sorted(ALL_LABELS)))
 
     retriever = Retriever(read_data, args.retrieval, embed_model=EMBED_MODEL)
 
@@ -267,29 +301,38 @@ def main():
     # Calling it once with 2000 prompts is ~50× faster than calling it 2000 times with 1 prompt each. 
 
     #--------Pass to VLLM-----------
+    print("[vllm] loading model...")
+    llm = LLM(model=model_name, dtype="float16", trust_remote_code=True, max_model_len=8192)
+    sampling_params = SamplingParams(temperature=0, max_tokens=64, stop=["\n", "<|eot_id|>"])
+    print("[vllm] generating...")
+    outputs = llm.generate(prompts, sampling_params)
+    raw_preds = [o.outputs[0].text for o in outputs]
 
-    
     #-----Decode output and write to file-------------
+    # Pre-fill every mention with NA so the output is always valid
+    results = []
+    for record in test_data:
+        results.append({
+            "articleId": record.get("articleId", ""),
+            "sentId": record.get("sentId", ""),
+            "sentText": record["sentText"],
+            "relationMentions": [
+                {"em1Text": rm["em1Text"], "em2Text": rm["em2Text"], "label": "NA"}
+                for rm in record.get("relationMentions", [])
+            ],
+        })
 
-    
+    for (sent_idx, m_idx), raw in zip(index_map, raw_preds):
+        en_label = closest_label(raw, ALL_LABELS)
+        label = forward_map.get(en_label, en_label) if forward_map else en_label
+        results[sent_idx]["relationMentions"][m_idx]["label"] = label
 
+    out_path = os.path.join(args.output_dir, f"output_{args.lang}.jsonl")
+    with open(out_path, "w", encoding="utf-8") as f:
+        for r in results:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+    print(f"[done] saved {len(results)} predictions to {out_path}")
 
 if __name__ == "__main__":
-    # List of input strings
-    # my_prompts = [
-    #     "The capital of France is",
-    #     "Write a haiku about a GPU:",
-    #     "Explain the theory of relativity in one sentence:"
-    # ]
-    
-    # # Get the outputs
-    # results = generate_vllm_responses(my_prompts, model_name = "/home/scai/msr/aiy247541/scratch/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659")
-    
-    # # Print the results
-    # for i, (prompt, response) in enumerate(zip(my_prompts, results)):
-    #     print(f"\n--- Prompt {i+1} ---")
-    #     print(f"Input: {prompt}")
-    #     print(f"Output: {response}")
-
     main()
