@@ -29,22 +29,23 @@ if [ ! -d "$BASE/h" ]; then
     echo "ERROR: $BASE/h not found. Please upload the h/ folder to the HPC first."
     exit 1
 fi
-cd "$BASE/h"
+cd "$BASE/Q3"
+
+OUTDIR=./output
 
 echo "====== Q3 ICL Inference ======"
-bash infer.sh ./output
+bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"        "$OUTDIR"
+bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"        "$OUTDIR"
+bash infer.sh kn  "$BASE/sft_dataset/kn_train.jsonl"        "$OUTDIR"
+bash infer.sh or  "$BASE/sft_dataset/or_train.jsonl"        "$OUTDIR"
+bash infer.sh tcy "$BASE/sft_dataset/tcy_val.jsonl"         "$OUTDIR"
 
 echo "====== Evaluation Q3 ======"
-# Evaluate against whichever files infer.sh used (test if present, else train/val)
-for lang in hi kn or tcy; do
-    if [ "$lang" = "tcy" ]; then
-        ref="$BASE/sft_dataset/tcy_val.jsonl"
-    else
-        ref="$BASE/sft_dataset/${lang}_train.jsonl"
-    fi
-    echo "--- $lang (ref: $ref) ---"
-    python -u "$BASE/eval.py" ./output/output_${lang}.jsonl "$ref"
-done
+python -u "$BASE/eval.py" "$OUTDIR/output_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/output_hi.jsonl"  "$BASE/sft_dataset/hi_train.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/output_kn.jsonl"  "$BASE/sft_dataset/kn_train.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/output_or.jsonl"  "$BASE/sft_dataset/or_train.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/output_tcy.jsonl" "$BASE/sft_dataset/tcy_val.jsonl"
 
 echo "====== Q3 Done ======"
 

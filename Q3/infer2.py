@@ -1,45 +1,25 @@
 from vllm import LLM, SamplingParams
-from typing import List
+from typing import List, Dict, Tuple
 import os
 import random
 import difflib
-from typing import List, Dict, Tuple
 import numpy as np
 from tqdm import tqdm
 import json
-
 import argparse
 
 from transformers import AutoTokenizer
 from sentence_transformers import SentenceTransformer
 import faiss
 
-# What AutoTokenizer.from_pretrained(MODEL) does
-# It downloads (or loads from cache) the tokenizer that ships with Llama-3.1-8B-Instruct. A tokenizer is a small object (~5 MB of files: tokenizer.json, special_tokens_map.json, tokenizer_config.json) that knows two things:
-
-# How to turn text into token IDs and back — the vocabulary and merge rules.
-# How to format a list of chat messages into the exact string the model was trained to expect — the chat template.
-
-# Llama-3.1-Instruct wasn't trained on plain text. It was trained on text formatted with specific special tokens that mark where the system prompt starts, where each user turn begins, where the assistant should respond, and so on. 
-
-# messages = [
-#     {"role": "system",    "content": "You are a relation extraction system..."},
-#     {"role": "user",      "content": "Entity 1: Paris\nEntity 2: France\n..."},
-#     {"role": "assistant", "content": "/location/country/capital"},
-#     {"role": "user",      "content": "Entity 1: ...\n..."},  # the query
-# ]
-
-# prompt_string = tokenizer.apply_chat_template(
-#     messages,
-#     tokenize=False,            # we want the string, not token IDs
-#     add_generation_prompt=True, # append the "assistant turn starts here" tokens
-# )
-
-TRAIN_FILE = "../en_sft_dataset/train.jsonl" 
+TRAIN_FILE = "../en_sft_dataset/train.jsonl"
 MAP_DIR = "../sft_dataset"
 
 MODEL = "/home/scai/msr/aiy247541/scratch/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
 EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+
+# All Indic training files with their label maps
+INDIC_LANGS = ["hi", "kn", "or", "tcy"]
 
 ALL_LABELS = [
     "NA",
@@ -69,11 +49,10 @@ ALL_LABELS = [
     "/sports/sports_team_location/teams",
 ]
 
-rng = random.Random(42)
-
 SYSTEM_PROMPT_TEMPLATE = """You are a relation extraction system. Given a sentence and two entities, output the relation between them.
 You MUST output EXACTLY ONE label from the list below — nothing else, no explanation, no punctuation:
 {label_list}"""
+
 
 def closest_label(pred: str, valid_labels: list) -> str:
     pred = pred.strip()
@@ -85,15 +64,52 @@ def closest_label(pred: str, valid_labels: list) -> str:
     matches = difflib.get_close_matches(pred, valid_labels, n=1, cutoff=0.0)
     return matches[0] if matches else "NA"
 
+
+def load_demo_data(file_path, inv_label_map=None):
+    data_list = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    for data in tqdm([json.loads(l) for l in lines if l.strip()], desc=file_path.split("/")[-1], leave=False):
+        sent = data["sentText"]
+        for rm in data.get("relationMentions", []):
+            em1 = rm["em1Text"]
+            em2 = rm["em2Text"]
+            raw_label = rm["label"]
+            if not raw_label or raw_label == "NA":
+                continue
+            if inv_label_map:
+                raw_label = inv_label_map.get(raw_label, raw_label)
+            if raw_label not in ALL_LABELS:
+                continue
+            data_list.append({
+                "sentText": sent,
+                "em1Text": em1,
+                "em2Text": em2,
+                "label": raw_label
+            })
+    return data_list
+
+
+def load_test_data(file_path):
+    with open(file_path, "r", encoding="utf-8") as f:
+        return [json.loads(l) for l in f if l.strip()]
+
+
+def load_label_map(lang: str) -> dict:
+    if lang == "en":
+        return {}
+    path = os.path.join(MAP_DIR, f"{lang}_map.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 class Retriever:
     def __init__(self, demo_data, retrieval_type, embed_model):
         self.demo_data = demo_data
         self.retrieval_type = retrieval_type
-        self.embed_model = embed_model
         self.rng = random.Random(42)
 
-        self.by_label = {} # Group examples by Label
-
+        self.by_label = {}
         for ex in demo_data:
             label = ex["label"]
             if label not in self.by_label:
@@ -106,14 +122,12 @@ class Retriever:
     def build_faiss_index(self, embed_model):
         print(f"[retriever] loading embedder: {embed_model}")
         self.embedder = SentenceTransformer(embed_model)
-
         texts = [f"{ex['em1Text']} {ex['em2Text']} {ex['sentText']}" for ex in self.demo_data]
         print(f"[retriever] encoding {len(texts)} pool texts...")
         embs = self.embedder.encode(
             texts, batch_size=512, show_progress_bar=True,
             normalize_embeddings=True, convert_to_numpy=True,
         ).astype(np.float32)
-
         self.index = faiss.IndexFlatIP(embs.shape[1])
         self.index.add(embs)
         print(f"[retriever] index built: {self.index.ntotal} vectors, dim={embs.shape[1]}")
@@ -127,107 +141,61 @@ class Retriever:
             return [self.rng.sample(self.demo_data, k) for _ in queries]
 
     def retrieve_stratified(self, k):
-
         labels = list(self.by_label.keys())
         self.rng.shuffle(labels)
         demos = []
         i = 0
-
         while len(demos) < k:
             lbl = labels[i % len(labels)]
             demos.append(self.rng.choice(self.by_label[lbl]))
             i += 1
-
         return demos
 
     def retrieve_similarity_batch(self, queries, k):
         texts = [f"{em1} {em2} {sent}" for em1, em2, sent in queries]
-
         q_embs = self.embedder.encode(
             texts, batch_size=512, normalize_embeddings=True,
             convert_to_numpy=True, show_progress_bar=True,
         ).astype(np.float32)
-
-        _, idxs = self.index.search(q_embs, k)  # shape (N, k)
-        
+        _, idxs = self.index.search(q_embs, k)
         return [[self.demo_data[i] for i in row] for row in idxs]
 
-def load_demo_data(file_path, inv_label_map=None):
 
-    data_list = []
+# Context-aware prompt builder: drops demos from the end (least relevant first)
+# until the tokenized prompt fits within max_prompt_tokens.
+# Indic scripts tokenize into 2-4x more tokens than English, so without this
+# long Indic sentences silently truncate inside vLLM.
+def build_prompt(tokenizer, system_prompt, demos, em1, em2, sent, max_prompt_tokens=3500):
+    for n in range(len(demos), -1, -1):
+        messages = [{"role": "system", "content": system_prompt}]
+        for d in demos[:n]:
+            example = f"Entity 1: {d['em1Text']}\nEntity 2: {d['em2Text']}\nSentence: {d['sentText']}\nRelation:"
+            messages.append({"role": "user", "content": example})
+            messages.append({"role": "assistant", "content": d["label"]})
+        query = f"Entity 1: {em1}\nEntity 2: {em2}\nSentence: {sent}\nRelation:"
+        messages.append({"role": "user", "content": query})
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        if len(tokenizer.encode(prompt)) <= max_prompt_tokens:
+            return prompt
+    return prompt  # zero-shot fallback (n=0)
 
-    ##SUBMISSION reading line wise
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    for data in tqdm([json.loads(l) for l in lines if l.strip()], desc=file_path.split("/")[-1], leave=False): #if l.strip() A filter that skips empty lines or lines containing only whitespace
-        sent = data["sentText"]
-        for rm in data.get("relationMentions", []):
-            em1 = rm["em1Text"]
-            em2 = rm["em2Text"]
-            raw_label = rm["label"]
-            if not raw_label or raw_label == "NA":
-                continue
-            if inv_label_map:
-                raw_label = inv_label_map.get(raw_label, raw_label)
-            if raw_label not in ALL_LABELS:
-                continue
-
-            data_list.append({
-                "sentText": sent,
-                "em1Text": em1,
-                "em2Text": em2,
-                "label": raw_label
-            })
-
-    return data_list
-
-def load_test_data(file_path):
-    # Nested test data
-    with open(file_path, "r", encoding="utf-8") as f:
-        return [json.loads(l) for l in f if l.strip()]
-
-def load_label_map(lang: str) -> dict:
-    if lang == "en":
-        return {}
-    path = os.path.join(MAP_DIR, f"{lang}_map.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def build_prompt(tokenizer, system_prompt, demos, em1, em2, sent):
-    # a prompt for each sample to be inferred
-    messages = [{"role": "system", "content": system_prompt}]
-
-    # add demos as few-shot examples
-    for d in demos:
-        example = (f"Entity 1: {d['em1Text']}\nEntity 2: {d['em2Text']}\nSentence: {d['sentText']}\nRelation:")
-        messages.append({"role": "user", "content": example})
-        messages.append({"role": "assistant", "content": d["label"]})
-
-    # add the query
-    query = f"Entity 1: {em1}\nEntity 2: {em2}\nSentence: {sent}\nRelation:"
-    messages.append({"role": "user", "content": query})
-
-    # apply chat template
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return prompt
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lang", required=True, choices=["en", "hi", "kn", "or", "tcy"])
     p.add_argument("--test_file", required=True)
     p.add_argument("--output_dir", default="./output")
-
-    #---Test time----
+    p.add_argument("--model_path", default=None, help="Local path to model weights (overrides MODEL constant)")
     p.add_argument("--num_demos", type=int, default=8)
     p.add_argument("--retrieval", choices=["similarity", "stratified", "random", "auto"], default="auto")
 
     args = p.parse_args()
 
+    # With all Indic data now in the pool, similarity retrieval works for every language
     if args.retrieval == "auto":
-        args.retrieval = "similarity" if args.lang in ("en", "hi", "kn") else "stratified"
+        args.retrieval = "similarity"
 
-    model_name = MODEL
+    model_name = args.model_path if args.model_path else MODEL
     print(f"[cfg] lang={args.lang}  retrieval={args.retrieval}  k={args.num_demos}")
     print(f"[cfg] model={model_name}")
 
@@ -235,80 +203,67 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    #-------load eng data------
-    read_data = load_demo_data(TRAIN_FILE)
-    print(f"[demo] {len(read_data)} examples, {len(set(e['label'] for e in read_data))} unique labels")
+    # Load English demo pool
+    demo_data = load_demo_data(TRAIN_FILE)
+    print(f"[demo] English: {len(demo_data)} examples")
 
-    # For languages with labeled training data, add their examples to the demo pool.
-    # This gives the similarity retriever in-language examples to match against.
-    if args.lang in ("hi", "kn"):
-        indic_train = os.path.join(MAP_DIR, f"{args.lang}_train.jsonl")
-        indic_map_path = os.path.join(MAP_DIR, f"{args.lang}_map.json")
+    # Load ALL Indic training data into demo pool (not just hi/kn).
+    # This means or/tcy test queries also find same-script demos via similarity.
+    for lang_code in INDIC_LANGS:
+        indic_train = os.path.join(MAP_DIR, f"{lang_code}_train.jsonl")
+        indic_map_path = os.path.join(MAP_DIR, f"{lang_code}_map.json")
         if os.path.isfile(indic_train) and os.path.isfile(indic_map_path):
             with open(indic_map_path, "r", encoding="utf-8") as f:
                 fwd = json.load(f)
             inv_map = {v: k for k, v in fwd.items()}
             indic_demos = load_demo_data(indic_train, inv_label_map=inv_map)
-            read_data.extend(indic_demos)
-            print(f"[demo] added {len(indic_demos)} {args.lang} examples to total {len(read_data)}")
+            demo_data.extend(indic_demos)
+            print(f"[demo] {lang_code}: +{len(indic_demos)} examples → total {len(demo_data)}")
 
-    #-------load test data------
     test_data = load_test_data(args.test_file)
     print(f"[test] {len(test_data)} sentences")
 
-    #--------A class that gets demos based on query---------
-    #LLM outputs eng labels, so need translation
     forward_map = load_label_map(args.lang)
     print(f"[map] {len(forward_map)} entries for {args.lang}")
-    print(f"[map] Entry sample: {list(forward_map.items())[0]}")
 
-    #--------read test and build prompts------
-    # Use ALL_LABELS directly so every valid label appears in the prompt,
-    # even if a rare label has zero examples in the training pool.
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(label_list="\n".join(sorted(ALL_LABELS)))
 
-    retriever = Retriever(read_data, args.retrieval, embed_model=EMBED_MODEL)
+    retriever = Retriever(demo_data, args.retrieval, embed_model=EMBED_MODEL)
 
     queries = []
-    index_map = [] # for later mapping back vllm output for nesting data
-
-    # get k demos using 
-    # format them in prompt
+    index_map = []
     for sent_idx, data in enumerate(tqdm(test_data, desc="build prompts")):
         sent = data["sentText"]
         for m_idx, rm in enumerate(data["relationMentions"]):
             queries.append((rm["em1Text"], rm["em2Text"], sent))
             index_map.append((sent_idx, m_idx))
 
-    # test_data[sent_idx]["relationMentions"][m_idx] ↔ prompts[i]. 
-    # When vllm returns a flat list, zip(index_map, predictions) gives you back the (sent_idx, m_idx) address for each one.
-
-    # Expensive work on entire batch rather than on individual query
     demos_per_query = retriever.retrieve_batch(queries, args.num_demos)
 
-    print(f"[debug] demos for query 0: {[d['label'] for d in demos_per_query[0]]}")
-
     prompts = []
-    # Make prompts using the retrieved demos
     for (em1, em2, sent), demos in zip(queries, demos_per_query):
         prompts.append(build_prompt(tokenizer, system_prompt, demos, em1, em2, sent))
 
     print(f"[prompts] built {len(prompts)} prompts")
     print(f"[prompts] sample:\n{prompts[0][:800]}...\n")
 
-    #-------Batch all prompts---------
-    # pack all prompts together for speed
-    # Calling it once with 2000 prompts is ~50× faster than calling it 2000 times with 1 prompt each. 
-
-    #--------Pass to VLLM-----------
     print("[vllm] loading model...")
     llm = LLM(model=model_name, dtype="float16", trust_remote_code=True, max_model_len=8192)
-    sampling_params = SamplingParams(temperature=0, max_tokens=64, stop=["\n", "<|eot_id|>"])
+
+    # Guided decoding: constrains vLLM to output exactly one of the 24 valid labels.
+    # Eliminates label-snapping errors entirely — model cannot produce an invalid string.
+    # Falls back to greedy + stop tokens if the installed vLLM version is too old.
+    try:
+        sampling_params = SamplingParams(temperature=0, max_tokens=64, guided_choice=ALL_LABELS)
+        print("[vllm] using guided decoding")
+    except TypeError:
+        sampling_params = SamplingParams(temperature=0, max_tokens=64, stop=["\n", "<|eot_id|>"])
+        print("[vllm] guided decoding not supported, using greedy + stop tokens")
+
     print("[vllm] generating...")
     outputs = llm.generate(prompts, sampling_params)
     raw_preds = [o.outputs[0].text for o in outputs]
 
-    #-----Decode output and write to file-------------
     # Pre-fill every mention with NA so the output is always valid
     results = []
     for record in test_data:
@@ -332,7 +287,8 @@ def main():
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    print(f"[done] saved {len(results)} predictions to {out_path}")
+    print(f"[done] saved {len(results)} predictions → {out_path}")
+
 
 if __name__ == "__main__":
     main()
