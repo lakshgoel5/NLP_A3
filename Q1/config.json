@@ -5,13 +5,14 @@
     "weight_decay": 0.01,
     "accumulation_steps": 2,
 
-    "lora_rank": 16,
-    "lora_alpha": 32,
-    "lora_dropout": 0.0,
-    
-    "warmup_ratio": 0.1,
+    "lora_rank": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.05,
+
+    "warmup_ratio": 0.06,
 
     "entity_repr": "concat_four",
 
-    "max_len": 256
+    "max_len": 256,
+    "indic_repeat": 5
 }

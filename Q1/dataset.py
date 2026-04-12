@@ -69,34 +69,35 @@ def find_token_position(ids, token_id):
         return None
 
 class RDataset(Dataset):
-    def __init__(self, file_paths, tokenizer, label2id, map_paths=None, max_length=256):
+    def __init__(self, file_paths, tokenizer, label2id, map_paths=None, max_length=256, indic_repeat=1):
         self.tokenizer = tokenizer
         self.label2id = label2id
         self.max_length = max_length
         self.examples = []
-        self.load_data(file_paths, map_paths)
+        self.load_data(file_paths, map_paths or [], indic_repeat)
 
-    def load_data(self, file_paths, map_paths):
+    def load_data(self, file_paths, map_paths, indic_repeat=1):
         e1_id = self.tokenizer.convert_tokens_to_ids("[E1]")
         e1_end_id = self.tokenizer.convert_tokens_to_ids("[/E1]")
         e2_id = self.tokenizer.convert_tokens_to_ids("[E2]")
         e2_end_id = self.tokenizer.convert_tokens_to_ids("[/E2]")
 
         file_to_invmap = {}
-        if map_paths:
-            for map_path in map_paths:
-                with open(map_path, "r", encoding="utf-8") as f:
-                    forward_map = json.load(f)
-                    inv = {v: k for k, v in forward_map.items()}
-                    lang_code = map_path.split("/")[-1].split("_")[0] #DEBUG: Hardcoaded name of langauge
-                    for fp in file_paths:
-                        if lang_code in fp:
-                            file_to_invmap[fp] = inv
+        for map_path in map_paths:
+            with open(map_path, "r", encoding="utf-8") as f:
+                forward_map = json.load(f)
+                inv = {v: k for k, v in forward_map.items()}
+                lang_code = map_path.split("/")[-1].split("_")[0] #DEBUG: Hardcoaded name of langauge
+                for fp in file_paths:
+                    if lang_code in fp:
+                        file_to_invmap[fp] = inv
 
         skipped = 0
         for file_path in file_paths:
             inv_map = file_to_invmap.get(file_path, None)
-            
+            repeat = indic_repeat if inv_map is not None else 1
+
+            file_examples = []
             # --- SUBMISSION: replace the 3 lines below with the robust block (see commented code) ---
             with open(file_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -134,13 +135,13 @@ class RDataset(Dataset):
                         if marked is None:
                             skipped += 1
                             continue
-                        
+
                         enc = self.tokenizer(
                             marked,
                             max_length=self.max_length,
                             truncation=True,
                             padding=False, # Because sentences in a batch have different lengths. collate later efficiently
-                            return_tensors=None, # return plain Python lists, not torch tensors # Because sentences in a batch have different lengths. 
+                            return_tensors=None, # return plain Python lists, not torch tensors # Because sentences in a batch have different lengths.
                         )
                         # output is a dictionary with keys "input_ids" and "attention_mask"
                         ids = enc["input_ids"]
@@ -155,7 +156,7 @@ class RDataset(Dataset):
                             skipped += 1
                             continue
 
-                        self.examples.append({
+                        file_examples.append({
                             "input_ids": torch.tensor(ids, dtype=torch.long), #for whole numbers used as INDICES
                             "attention_mask": torch.tensor(enc["attention_mask"], dtype=torch.long), #for whole numbers used as INDICES
                             "e1_pos": e1_pos,
@@ -165,7 +166,9 @@ class RDataset(Dataset):
                             "label": label_id,
                         })
 
-        print(f"Loaded {len(self.examples)} examples, skipped {skipped}")
+            self.examples.extend(file_examples * repeat)
+
+        print(f"Loaded {len(self.examples)} examples (with repeats), skipped {skipped}")
 
     def __len__(self):
         return len(self.examples)

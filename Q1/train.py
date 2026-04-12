@@ -103,6 +103,7 @@ def main():
     entity_repr = config["entity_repr"]
 
     warmup_ratio = config["warmup_ratio"]
+    indic_repeat = config.get("indic_repeat", 1)
 
     # ---------Data Paths--------
     INDIC_FILES = [
@@ -156,6 +157,7 @@ def main():
         label2id=label2id,
         map_paths=train_maps,
         max_length=max_len,
+        indic_repeat=indic_repeat,
     )
 
     train_loader=DataLoader(
