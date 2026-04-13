@@ -365,12 +365,18 @@ def main():
         label = forward_map.get(en_label, en_label) if forward_map else en_label
         results[sent_idx]["relationMentions"][m_idx]["label"] = label
 
-    out_path = os.path.join(args.output_dir, f"output_{args.lang}.jsonl")
+    out_path = os.path.join(args.output_dir, f"Q3_{args.lang}.jsonl")
     with open(out_path, "w", encoding="utf-8") as f:
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
     print(f"[done] saved {len(results)} predictions to {out_path}")
+
+    if args.holdout_eval and holdout_test is not None:
+        ref_path = os.path.join(args.output_dir, f"holdout_ref_{args.lang}.jsonl")
+        with open(ref_path, "w", encoding="utf-8") as f:
+            for r in test_data:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"[holdout] reference saved to {ref_path}")
 
 if __name__ == "__main__":
     main()

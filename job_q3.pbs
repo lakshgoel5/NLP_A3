@@ -32,20 +32,27 @@ fi
 cd "$BASE/Q3"
 
 OUTDIR=./output
+mkdir -p "$OUTDIR"
 
 echo "====== Q3 ICL Inference ======"
-bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"        "$OUTDIR"
-bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"        "$OUTDIR"
-bash infer.sh kn  "$BASE/sft_dataset/kn_train.jsonl"        "$OUTDIR"
-bash infer.sh or  "$BASE/sft_dataset/or_train.jsonl"        "$OUTDIR"
-bash infer.sh tcy "$BASE/sft_dataset/tcy_val.jsonl"         "$OUTDIR"
+# English: valid.jsonl is separate from the English demo pool — no leakage
+python -u infer2.py --lang en  --test_file "$BASE/en_sft_dataset/valid.jsonl" --output_dir "$OUTDIR"
+# Indic: --holdout_eval splits train 80/20; 80% goes into demo pool, 20% used as test
+# This avoids testing on data that is itself a demo — saves holdout_ref_{lang}.jsonl for eval
+python -u infer2.py --lang hi  --output_dir "$OUTDIR" --holdout_eval
+python -u infer2.py --lang kn  --output_dir "$OUTDIR" --holdout_eval
+python -u infer2.py --lang or  --output_dir "$OUTDIR" --holdout_eval
+python -u infer2.py --lang tcy --output_dir "$OUTDIR" --holdout_eval
+
+echo "====== Validate Q3 ======"
+python -u "$BASE/validate_output.py" "$OUTDIR/Q3_en.jsonl" "$OUTDIR/Q3_hi.jsonl" "$OUTDIR/Q3_kn.jsonl" "$OUTDIR/Q3_or.jsonl" "$OUTDIR/Q3_tcy.jsonl"
 
 echo "====== Evaluation Q3 ======"
-python -u "$BASE/eval.py" "$OUTDIR/output_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/output_hi.jsonl"  "$BASE/sft_dataset/hi_train.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/output_kn.jsonl"  "$BASE/sft_dataset/kn_train.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/output_or.jsonl"  "$BASE/sft_dataset/or_train.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/output_tcy.jsonl" "$BASE/sft_dataset/tcy_val.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_hi.jsonl"  "$OUTDIR/holdout_ref_hi.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_kn.jsonl"  "$OUTDIR/holdout_ref_kn.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_or.jsonl"  "$OUTDIR/holdout_ref_or.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_tcy.jsonl" "$OUTDIR/holdout_ref_tcy.jsonl"
 
 echo "====== Q3 Done ======"
 

@@ -197,7 +197,7 @@ def main():
             results[rec_idx]["relationMentions"][men_idx]["label"] = label
 
     # --------- write output ---------
-    output_path = os.path.join(args.output_dir, f"output_{args.lang}.jsonl")
+    output_path = os.path.join(args.output_dir, f"Q2_{args.lang}.jsonl")
     with open(output_path, "w", encoding="utf-8") as f:
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")

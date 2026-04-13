@@ -17,10 +17,9 @@ BASE=/home/cse/btech/cs1230848/NLP_A3
 cd "$BASE/Q2"
 
 OUTBASE=./output
-FINAL_MODEL="$OUTBASE/re_finetuned_b"
 
-echo "====== Training Q2 (baseline) ======"
-bash train.sh "$OUTBASE" baseline
+echo "====== Training Q2 ======"
+bash train.sh "$OUTBASE"
 
 echo "====== Generating val splits ======"
 python -u "$BASE/make_val_splits.py" \
@@ -31,17 +30,20 @@ python -u "$BASE/make_val_splits.py" \
     --out_dir ./val_splits
 
 echo "====== Inference Q2 ======"
-bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"   "$FINAL_MODEL"
-bash infer.sh hi  ./val_splits/hi_train_val.jsonl       "$FINAL_MODEL"
-bash infer.sh kn  ./val_splits/kn_train_val.jsonl       "$FINAL_MODEL"
-bash infer.sh or  ./val_splits/or_train_val.jsonl       "$FINAL_MODEL"
-bash infer.sh tcy ./val_splits/tcy_val_val.jsonl        "$FINAL_MODEL"
+bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"   "$OUTBASE"
+bash infer.sh hi  ./val_splits/hi_train_val.jsonl       "$OUTBASE"
+bash infer.sh kn  ./val_splits/kn_train_val.jsonl       "$OUTBASE"
+bash infer.sh or  ./val_splits/or_train_val.jsonl       "$OUTBASE"
+bash infer.sh tcy ./val_splits/tcy_val_val.jsonl        "$OUTBASE"
+
+echo "====== Validate Q2 ======"
+python -u "$BASE/validate_output.py" "$OUTBASE/Q2_en.jsonl" "$OUTBASE/Q2_hi.jsonl" "$OUTBASE/Q2_kn.jsonl" "$OUTBASE/Q2_or.jsonl" "$OUTBASE/Q2_tcy.jsonl"
 
 echo "====== Evaluation Q2 ======"
-python -u "$BASE/eval.py" "$FINAL_MODEL/output_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
-python -u "$BASE/eval.py" "$FINAL_MODEL/output_hi.jsonl"  ./val_splits/hi_train_val.jsonl
-python -u "$BASE/eval.py" "$FINAL_MODEL/output_kn.jsonl"  ./val_splits/kn_train_val.jsonl
-python -u "$BASE/eval.py" "$FINAL_MODEL/output_or.jsonl"  ./val_splits/or_train_val.jsonl
-python -u "$BASE/eval.py" "$FINAL_MODEL/output_tcy.jsonl" ./val_splits/tcy_val_val.jsonl
+python -u "$BASE/eval.py" "$OUTBASE/Q2_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
+python -u "$BASE/eval.py" "$OUTBASE/Q2_hi.jsonl"  ./val_splits/hi_train_val.jsonl
+python -u "$BASE/eval.py" "$OUTBASE/Q2_kn.jsonl"  ./val_splits/kn_train_val.jsonl
+python -u "$BASE/eval.py" "$OUTBASE/Q2_or.jsonl"  ./val_splits/or_train_val.jsonl
+python -u "$BASE/eval.py" "$OUTBASE/Q2_tcy.jsonl" ./val_splits/tcy_val_val.jsonl
 
 echo "====== Q2 Done ======"

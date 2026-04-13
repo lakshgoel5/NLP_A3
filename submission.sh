@@ -1,16 +1,29 @@
-ZIP_NAME="2023CS10848.zip"
+#!/bin/bash
+ZIP_NAME="2023CS10848_A3_NLP.zip"
 TEMP_DIR="temp_sub"
-rm -rf $TEMP_DIR
-mkdir $TEMP_DIR
+INNER_DIR="$TEMP_DIR/starter_code"
 
-cp -r Q1 Q2 Q3 $TEMP_DIR/
-cp eval.py icl_starter.py requirements.txt README.md $TEMP_DIR/
+rm -rf "$TEMP_DIR"
+mkdir -p "$INNER_DIR"
 
-find $TEMP_DIR -name "*.jsonl" -type f -delete
-find $TEMP_DIR -name "__pycache__" -type d -exec rm -rf {} +
+# Copy required files
+cp -r Q1 Q2 Q3 "$INNER_DIR/"
+cp eval.py icl_starter.py requirements.txt README.md "$INNER_DIR/"
 
-cd $TEMP_DIR
-zip -r ../$ZIP_NAME .
+# Remove data files, caches, model outputs
+find "$INNER_DIR" -name "*.jsonl" -type f -delete
+find "$INNER_DIR" -name "*.pt"    -type f -delete
+find "$INNER_DIR" -name "*.bin"   -type f -delete
+find "$INNER_DIR" -name "*.safetensors" -type f -delete
+find "$INNER_DIR" -name "__pycache__" -type d -exec rm -rf {} +
+find "$INNER_DIR" -name "output"  -type d -exec rm -rf {} +
+find "$INNER_DIR" -name "val_splits" -type d -exec rm -rf {} +
+
+cd "$TEMP_DIR"
+zip -r "../$ZIP_NAME" .
 cd ..
 
+rm -rf "$TEMP_DIR"
 echo "Submission zip created: $ZIP_NAME"
+echo "Contents:"
+unzip -l "$ZIP_NAME" | head -40
