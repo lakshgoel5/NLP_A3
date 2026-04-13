@@ -260,7 +260,8 @@ def main():
     #LLM outputs eng labels, so need translation
     forward_map = load_label_map(args.lang)
     print(f"[map] {len(forward_map)} entries for {args.lang}")
-    print(f"[map] Entry sample: {list(forward_map.items())[0]}")
+    if forward_map:
+        print(f"[map] Entry sample: {list(forward_map.items())[0]}")
 
     #--------read test and build prompts------
     # Use ALL_LABELS directly so every valid label appears in the prompt,
