@@ -94,6 +94,34 @@ def load_test_data(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
         return [json.loads(l) for l in f if l.strip()]
 
+def split_for_local_eval(file_path, inv_label_map=None, seed=42):
+    """Split an Indic train file 80/20. Returns (demo_list, test_records).
+    demo_list: flat dicts for the demo pool (80%)
+    test_records: nested JSONL records for inference (20%)
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+    random.Random(seed).shuffle(lines)
+    n_test = max(1, int(len(lines) * 0.2))
+    train_lines = lines[n_test:]   # 80%
+    test_lines  = lines[:n_test]   # 20%
+
+    demo_data = []
+    for data in [json.loads(l) for l in train_lines]:
+        sent = data["sentText"]
+        for rm in data.get("relationMentions", []):
+            em1, em2, raw_label = rm["em1Text"], rm["em2Text"], rm["label"]
+            if not raw_label or raw_label == "NA":
+                continue
+            if inv_label_map:
+                raw_label = inv_label_map.get(raw_label, raw_label)
+            if raw_label not in ALL_LABELS:
+                continue
+            demo_data.append({"sentText": sent, "em1Text": em1, "em2Text": em2, "label": raw_label})
+
+    test_data = [json.loads(l) for l in test_lines]
+    return demo_data, test_data
+
 
 def load_label_map(lang: str) -> dict:
     if lang == "en":
@@ -183,11 +211,13 @@ def build_prompt(tokenizer, system_prompt, demos, em1, em2, sent, max_prompt_tok
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lang", required=True, choices=["en", "hi", "kn", "or", "tcy"])
-    p.add_argument("--test_file", required=True)
+    p.add_argument("--test_file", default=None)
     p.add_argument("--output_dir", default="./output")
     p.add_argument("--model_path", default=None, help="Local path to model weights (overrides MODEL constant)")
     p.add_argument("--num_demos", type=int, default=8)
     p.add_argument("--retrieval", choices=["similarity", "stratified", "random", "auto"], default="auto")
+    p.add_argument("--holdout_eval", action="store_true",
+                   help="Split Indic train 80/20; use 20%% as test (local eval only)")
 
     args = p.parse_args()
 
@@ -209,6 +239,7 @@ def main():
 
     # Load ALL Indic training data into demo pool (not just hi/kn).
     # This means or/tcy test queries also find same-script demos via similarity.
+    holdout_test = None
     for lang_code in INDIC_LANGS:
         indic_train = os.path.join(MAP_DIR, f"{lang_code}_train.jsonl")
         indic_map_path = os.path.join(MAP_DIR, f"{lang_code}_map.json")
@@ -216,11 +247,20 @@ def main():
             with open(indic_map_path, "r", encoding="utf-8") as f:
                 fwd = json.load(f)
             inv_map = {v: k for k, v in fwd.items()}
-            indic_demos = load_demo_data(indic_train, inv_label_map=inv_map)
+            if args.holdout_eval and lang_code == args.lang:
+                indic_demos, holdout_test = split_for_local_eval(indic_train, inv_map)
+                print(f"[holdout] {lang_code}: {len(indic_demos)} demo / {len(holdout_test)} test")
+            else:
+                indic_demos = load_demo_data(indic_train, inv_label_map=inv_map)
             demo_data.extend(indic_demos)
             print(f"[demo] {lang_code}: +{len(indic_demos)} examples → total {len(demo_data)}")
 
-    test_data = load_test_data(args.test_file)
+    if holdout_test is not None:
+        test_data = holdout_test
+    else:
+        if args.test_file is None:
+            raise ValueError("--test_file is required when not using --holdout_eval")
+        test_data = load_test_data(args.test_file)
     print(f"[test] {len(test_data)} sentences")
 
     forward_map = load_label_map(args.lang)

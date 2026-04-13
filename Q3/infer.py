@@ -187,6 +187,34 @@ def load_test_data(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
         return [json.loads(l) for l in f if l.strip()]
 
+def split_for_local_eval(file_path, inv_label_map=None, seed=42):
+    """Split an Indic train file 80/20. Returns (demo_list, test_records).
+    demo_list: flat dicts for the demo pool (80%)
+    test_records: nested JSONL records for inference (20%)
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+    random.Random(seed).shuffle(lines)
+    n_test = max(1, int(len(lines) * 0.2))
+    train_lines = lines[n_test:]   # 80%
+    test_lines  = lines[:n_test]   # 20%
+
+    demo_data = []
+    for data in [json.loads(l) for l in train_lines]:
+        sent = data["sentText"]
+        for rm in data.get("relationMentions", []):
+            em1, em2, raw_label = rm["em1Text"], rm["em2Text"], rm["label"]
+            if not raw_label or raw_label == "NA":
+                continue
+            if inv_label_map:
+                raw_label = inv_label_map.get(raw_label, raw_label)
+            if raw_label not in ALL_LABELS:
+                continue
+            demo_data.append({"sentText": sent, "em1Text": em1, "em2Text": em2, "label": raw_label})
+
+    test_data = [json.loads(l) for l in test_lines]
+    return demo_data, test_data
+
 def load_label_map(lang: str) -> dict:
     if lang == "en":
         return {}
@@ -215,17 +243,16 @@ def build_prompt(tokenizer, system_prompt, demos, em1, em2, sent):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--lang", required=True, choices=["en", "hi", "kn", "or", "tcy"])
-    p.add_argument("--test_file", required=True)
+    p.add_argument("--test_file", default=None)
     p.add_argument("--output_dir", default="./output")
+    p.add_argument("--holdout_eval", action="store_true",
+                   help="Split Indic train 80/20; use 20%% as test (local eval only)")
 
     #---Test time----
     p.add_argument("--num_demos", type=int, default=8)
-    p.add_argument("--retrieval", choices=["similarity", "stratified", "random", "auto"], default="auto")
+    p.add_argument("--retrieval", choices=["similarity", "stratified", "random"], default="similarity")
 
     args = p.parse_args()
-
-    if args.retrieval == "auto":
-        args.retrieval = "similarity" if args.lang in ("en", "hi", "kn") else "stratified"
 
     model_name = MODEL
     print(f"[cfg] lang={args.lang}  retrieval={args.retrieval}  k={args.num_demos}")
@@ -241,6 +268,7 @@ def main():
 
     # For languages with labeled training data, add their examples to the demo pool.
     # This gives the similarity retriever in-language examples to match against.
+    holdout_test = None
     if args.lang in ("hi", "kn"):
         indic_train = os.path.join(MAP_DIR, f"{args.lang}_train.jsonl")
         indic_map_path = os.path.join(MAP_DIR, f"{args.lang}_map.json")
@@ -248,12 +276,21 @@ def main():
             with open(indic_map_path, "r", encoding="utf-8") as f:
                 fwd = json.load(f)
             inv_map = {v: k for k, v in fwd.items()}
-            indic_demos = load_demo_data(indic_train, inv_label_map=inv_map)
+            if args.holdout_eval:
+                indic_demos, holdout_test = split_for_local_eval(indic_train, inv_map)
+                print(f"[holdout] {args.lang}: {len(indic_demos)} demo / {len(holdout_test)} test")
+            else:
+                indic_demos = load_demo_data(indic_train, inv_label_map=inv_map)
             read_data.extend(indic_demos)
-            print(f"[demo] added {len(indic_demos)} {args.lang} examples to total {len(read_data)}")
+            print(f"[demo] added {len(indic_demos)} {args.lang} examples → total {len(read_data)}")
 
     #-------load test data------
-    test_data = load_test_data(args.test_file)
+    if holdout_test is not None:
+        test_data = holdout_test
+    else:
+        if args.test_file is None:
+            raise ValueError("--test_file is required when not using --holdout_eval")
+        test_data = load_test_data(args.test_file)
     print(f"[test] {len(test_data)} sentences")
 
     #--------A class that gets demos based on query---------
