@@ -1,0 +1,14 @@
+{
+    "max_samples_per_lang": 500,
+    "chunk_size": 256,
+    "batch_size": 8,
+    "epochs": 1,
+    "lr": 0.00005,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.05,
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "seed": 42,
+    "langs": ["hi", "kn", "or", "tcy"]
+}

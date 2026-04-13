@@ -1,9 +1,9 @@
 {
-    "epochs": 5,
+    "epochs": 10,
     "batch_size": 16,
     "lr": 2e-4,
     "weight_decay": 0.01,
-    "accumulation_steps": 2,
+    "accumulation_steps": 4,
 
     "lora_rank": 32,
     "lora_alpha": 64,

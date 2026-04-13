@@ -16,6 +16,7 @@ conda activate /home/scai/msr/aiy247541/.conda/envs/vllm_server_nlp
 # Required for faiss-gpu to find CUDA runtime libs
 export LD_LIBRARY_PATH=/home/scai/msr/aiy247541/.conda/envs/vllm_server_nlp/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:$LD_LIBRARY_PATH
 export WANDB_DISABLED=true
+export CUDA_VISIBLE_DEVICES=0
 
 cd /home/cse/btech/cs1230848/HPC-IIT-Delhi
 python3 iitdproxy.py proxyAuth.txt &

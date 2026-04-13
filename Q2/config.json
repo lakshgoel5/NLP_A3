@@ -1,10 +1,10 @@
 {
     "model_name": "Qwen/Qwen2.5-1.5B",
-    "epochs": 3,
+    "epochs": 10,
     "batch_size": 8,
     "lr": 2e-4,
     "weight_decay": 0.01,
-    "accumulation_steps": 4,
+    "accumulation_steps": 8,
     "max_len": 256,
     "max_new_tokens": 48,
     "lora_rank": 16,

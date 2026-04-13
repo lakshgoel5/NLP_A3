@@ -1,0 +1,18 @@
+{
+    "epochs": 10,
+    "batch_size": 16,
+    "lr": 2e-4,
+    "weight_decay": 0.01,
+    "accumulation_steps": 4,
+
+    "lora_rank": 32,
+    "lora_alpha": 64,
+    "lora_dropout": 0.05,
+
+    "warmup_ratio": 0.06,
+
+    "entity_repr": "concat_four",
+
+    "max_len": 256,
+    "indic_repeat": 5
+}

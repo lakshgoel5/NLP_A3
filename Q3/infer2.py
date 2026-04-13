@@ -258,8 +258,10 @@ def main():
     if holdout_test is not None:
         test_data = holdout_test
     else:
+        if args.holdout_eval:
+            print(f"[holdout] no train file found for '{args.lang}', falling back to --test_file")
         if args.test_file is None:
-            raise ValueError("--test_file is required when not using --holdout_eval")
+            raise ValueError(f"--test_file is required (no train file found for '{args.lang}' to split)")
         test_data = load_test_data(args.test_file)
     print(f"[test] {len(test_data)} sentences")
 
