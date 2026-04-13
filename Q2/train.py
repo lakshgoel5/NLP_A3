@@ -1,8 +1,6 @@
 import os
 import json
-import random
-import shutil
-import tempfile
+import time
 import difflib
 import argparse
 from functools import partial
@@ -19,22 +17,6 @@ from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 from dataset import SFTDataset, ALL_RELATION_LABELS, build_label_map, collate_fn
 from model import load_base_model, lora
-
-
-def split_indic_file(file_path, tmp_dir, val_ratio=0.2, seed=42):
-    """Shuffle and split a jsonl file. Returns (train_path, val_path) in tmp_dir."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = [l for l in f if l.strip()]
-    random.Random(seed).shuffle(lines)
-    n_val = max(1, int(len(lines) * val_ratio))
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    train_path = os.path.join(tmp_dir, f"{stem}_80pct.jsonl")
-    val_path   = os.path.join(tmp_dir, f"{stem}_20pct.jsonl")
-    with open(train_path, "w", encoding="utf-8") as f:
-        f.writelines(lines[n_val:])
-    with open(val_path, "w", encoding="utf-8") as f:
-        f.writelines(lines[:n_val])
-    return train_path, val_path
 
 
 def closest_label(pred, valid_labels):
@@ -165,23 +147,16 @@ def main():
         ("../sft_dataset/tcy_val.jsonl",   "../sft_dataset/tcy_map.json"),
     ]
 
-    tmp_dir = tempfile.mkdtemp(prefix="q2_splits_")
     train_files = ["../en_sft_dataset/train.jsonl"]
     val_files   = ["../en_sft_dataset/valid.jsonl"]
     train_maps  = []
-    val_inv_maps = {}  # val_file_path -> inv_map dict, for evaluate_f1
 
     for data_file, map_file in INDIC_FILES:
         if not os.path.isfile(data_file):
             continue
-        tr, vl = split_indic_file(data_file, tmp_dir)
-        train_files.append(tr)
-        val_files.append(vl)
+        train_files.append(data_file)
         if os.path.isfile(map_file):
             train_maps.append(map_file)
-            with open(map_file, "r", encoding="utf-8") as mf:
-                fwd = json.load(mf)
-            val_inv_maps[vl] = {v: k for k, v in fwd.items()}
 
     train_files = [f for f in train_files if os.path.isfile(f)]
     val_files   = [f for f in val_files   if os.path.isfile(f)]
@@ -239,16 +214,28 @@ def main():
 
     # ---------train------------
     best_macro_f1 = 0
-    
+    TIME_LIMIT = 4 * 3600 + 50 * 60  # 4h 50min — keeps Q1+Q2 under 8h total
+
     print(f"Starting training: {epochs} epochs, {total_steps} total steps, {warmup_steps} warmup steps\n")
 
+    train_start = time.time()
     for epoch in range(1, epochs + 1):
+        if time.time() - train_start >= TIME_LIMIT:
+            print(f"\nTime limit reached before epoch {epoch}. Stopping.")
+            break
+
         model.train()
         total_loss = 0.0
         optimizer.zero_grad()
+        timed_out = False
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}", leave=True)
         for step, batch in enumerate(pbar, 1):
+            if time.time() - train_start >= TIME_LIMIT:
+                print(f"\nTime limit hit mid-epoch {epoch}. Discarding partial epoch.")
+                timed_out = True
+                break
+
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
@@ -284,6 +271,9 @@ def main():
             total_loss += loss_val.item() * accumulation
             pbar.set_postfix(loss=f"{total_loss / step:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
 
+        if timed_out:
+            break
+
         # Flush any remaining gradients from a partial accumulation window
         if step % accumulation != 0:
             scaler.unscale_(optimizer)
@@ -297,7 +287,7 @@ def main():
 
         # Switch to left-padding for generation
         tokenizer.padding_side = "left"
-        macro_f1, micro_f1 = evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens, file_to_inv_map=val_inv_maps)
+        macro_f1, micro_f1 = evaluate_f1(model, tokenizer, val_files, device, max_len, max_new_tokens)
         tokenizer.padding_side = "right"
 
         print(f"\nEpoch {epoch}/{epochs} | Train Loss: {avg_loss:.4f} | Val Macro-F1: {macro_f1:.4f} | Val Micro-F1: {micro_f1:.4f}")
@@ -307,8 +297,6 @@ def main():
             model.save_pretrained(args.output_dir)
             tokenizer.save_pretrained(args.output_dir)
             print(f"\nSaved best model (macro_f1={macro_f1:.4f})")
-
-    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

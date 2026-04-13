@@ -1,8 +1,6 @@
 import os
 import json
-import random
-import shutil
-import tempfile
+import time
 import argparse
 from functools import partial
 
@@ -20,22 +18,6 @@ from transformers import get_cosine_schedule_with_warmup
 
 from dataset import build_label_map, NUM_CLASSES, RDataset, collate_fn
 from model import load_base_model, lora, RelationClassifier
-
-def split_indic_file(file_path, tmp_dir, val_ratio=0.2, seed=42):
-    """Shuffle and split a jsonl file. Returns (train_path, val_path) in tmp_dir."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = [l for l in f if l.strip()]
-    random.Random(seed).shuffle(lines)
-    n_val = max(1, int(len(lines) * val_ratio))
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    train_path = os.path.join(tmp_dir, f"{stem}_80pct.jsonl")
-    val_path   = os.path.join(tmp_dir, f"{stem}_20pct.jsonl")
-    with open(train_path, "w", encoding="utf-8") as f:
-        f.writelines(lines[n_val:])
-    with open(val_path, "w", encoding="utf-8") as f:
-        f.writelines(lines[:n_val])
-    return train_path, val_path
-
 
 def compute_metrics(all_true, all_pred, id2label):
     na_id = {v: k for k, v in id2label.items()}["NA"]  # get NA's integer id
@@ -111,7 +93,6 @@ def main():
         ("../sft_dataset/kn_train.jsonl", "../sft_dataset/kn_map.json"),
     ]
 
-    tmp_dir = tempfile.mkdtemp(prefix="q1_splits_")
     train_files = ["../en_sft_dataset/train.jsonl"]
     val_files   = ["../en_sft_dataset/valid.jsonl"]
     train_maps  = []
@@ -119,12 +100,9 @@ def main():
 
     for data_file, map_file in INDIC_FILES:
         if os.path.isfile(data_file):
-            tr, vl = split_indic_file(data_file, tmp_dir)
-            train_files.append(tr)
-            val_files.append(vl)
+            train_files.append(data_file)
             if os.path.isfile(map_file):
                 train_maps.append(map_file)
-                val_maps.append(map_file)
 
     train_files = [f for f in train_files if os.path.isfile(f)]
     val_files   = [f for f in val_files   if os.path.isfile(f)]
@@ -233,16 +211,28 @@ def main():
 
     # ---------train------------
     best_macro_f1 = 0
-    
+    TIME_LIMIT = 2 * 3600 + 50 * 60  # 2h 50min — keeps Q1+Q2 under 8h total
+
     print(f"Starting training: {epochs} epochs, {total_steps} total steps, {warmup_steps} warmup steps\n")
 
+    train_start = time.time()
     for epoch in range(1, epochs + 1):
+        if time.time() - train_start >= TIME_LIMIT:
+            print(f"\nTime limit reached before epoch {epoch}. Stopping.")
+            break
+
         model.train()
         total_loss = 0.0
         optimizer.zero_grad()
+        timed_out = False
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}", leave=True)
         for step, batch in enumerate(pbar, 1):
+            if time.time() - train_start >= TIME_LIMIT:
+                print(f"\nTime limit hit mid-epoch {epoch}. Discarding partial epoch.")
+                timed_out = True
+                break
+
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             e1_pos = batch["e1_pos"].to(device) # batch["e1_pos"] is already a tensor of shape (batch_size,)
@@ -255,7 +245,7 @@ def main():
                 logits = model(input_ids, attention_mask, e1_pos, e1_end_pos, e2_pos, e2_end_pos)
                 loss_val = loss_function(logits, labels)
                 loss_val = loss_val / accumulation
-            
+
             scaler.scale(loss_val).backward() #multiply by a big number
 
             if step % accumulation == 0:
@@ -283,6 +273,9 @@ def main():
             total_loss += loss_val.item() * accumulation
             pbar.set_postfix(loss=f"{total_loss / step:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
 
+        if timed_out:
+            break
+
         avg_loss = total_loss / len(train_loader)
 
         macro_f1, micro_f1 = evaluate(model, val_loader, device, id2label)
@@ -296,8 +289,6 @@ def main():
             tokenizer.save_pretrained(checkpoint_path)
 
             torch.save(model.classifier.state_dict(), os.path.join(args.output_dir, "classifier_head.pt"))
-
-    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

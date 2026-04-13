@@ -1,2 +1,10 @@
-peft
+torch
 transformers
+peft
+vllm
+datasets
+scikit-learn
+numpy
+tqdm
+sentence-transformers
+faiss-gpu

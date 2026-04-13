@@ -13,7 +13,7 @@ export WANDB_DISABLED=true
 cd /home/cse/btech/cs1230848/HPC-IIT-Delhi
 python3 iitdproxy.py proxyAuth.txt &
 
-BASE=/home/cse/btech/cs1230848/NLP_A3
+BASE=/home/cse/btech/cs1230848/NLP_A3/sub
 cd "$BASE/Q2"
 
 OUTBASE=./output
@@ -21,29 +21,21 @@ OUTBASE=./output
 echo "====== Training Q2 ======"
 bash train.sh "$OUTBASE"
 
-echo "====== Generating val splits ======"
-python -u "$BASE/make_val_splits.py" \
-    --files "$BASE/sft_dataset/hi_train.jsonl" \
-            "$BASE/sft_dataset/kn_train.jsonl" \
-            "$BASE/sft_dataset/or_train.jsonl" \
-            "$BASE/sft_dataset/tcy_val.jsonl"  \
-    --out_dir ./val_splits
-
 echo "====== Inference Q2 ======"
-bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"   "$OUTBASE"
-bash infer.sh hi  ./val_splits/hi_train_val.jsonl       "$OUTBASE"
-bash infer.sh kn  ./val_splits/kn_train_val.jsonl       "$OUTBASE"
-bash infer.sh or  ./val_splits/or_train_val.jsonl       "$OUTBASE"
-bash infer.sh tcy ./val_splits/tcy_val_val.jsonl        "$OUTBASE"
+bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"    "$OUTBASE"
+bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"    "$OUTBASE"
+bash infer.sh kn  "$BASE/sft_dataset/kn_train.jsonl"    "$OUTBASE"
+bash infer.sh or  "$BASE/sft_dataset/or_train.jsonl"    "$OUTBASE"
+bash infer.sh tcy "$BASE/sft_dataset/tcy_val.jsonl"     "$OUTBASE"
 
 echo "====== Validate Q2 ======"
 python -u "$BASE/validate_output.py" "$OUTBASE/Q2_en.jsonl" "$OUTBASE/Q2_hi.jsonl" "$OUTBASE/Q2_kn.jsonl" "$OUTBASE/Q2_or.jsonl" "$OUTBASE/Q2_tcy.jsonl"
 
 echo "====== Evaluation Q2 ======"
 python -u "$BASE/eval.py" "$OUTBASE/Q2_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
-python -u "$BASE/eval.py" "$OUTBASE/Q2_hi.jsonl"  ./val_splits/hi_train_val.jsonl
-python -u "$BASE/eval.py" "$OUTBASE/Q2_kn.jsonl"  ./val_splits/kn_train_val.jsonl
-python -u "$BASE/eval.py" "$OUTBASE/Q2_or.jsonl"  ./val_splits/or_train_val.jsonl
-python -u "$BASE/eval.py" "$OUTBASE/Q2_tcy.jsonl" ./val_splits/tcy_val_val.jsonl
+python -u "$BASE/eval.py" "$OUTBASE/Q2_hi.jsonl"  "$BASE/sft_dataset/hi_train.jsonl"
+python -u "$BASE/eval.py" "$OUTBASE/Q2_kn.jsonl"  "$BASE/sft_dataset/kn_train.jsonl"
+python -u "$BASE/eval.py" "$OUTBASE/Q2_or.jsonl"  "$BASE/sft_dataset/or_train.jsonl"
+python -u "$BASE/eval.py" "$OUTBASE/Q2_tcy.jsonl" "$BASE/sft_dataset/tcy_val.jsonl"
 
 echo "====== Q2 Done ======"

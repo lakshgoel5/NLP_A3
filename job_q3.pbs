@@ -1,8 +1,9 @@
 #!/bin/bash
 #PBS -N Q3_ICL
 #PBS -P col772.cs1230848.course
-#PBS -l select=1:ncpus=8:ngpus=1:mem=32G:centos=skylake
+#PBS -l select=1:ncpus=4:ngpus=1:mem=16G:centos=skylake
 #PBS -l walltime=01:00:00
+#PBS -q high
 
 set -e
 
@@ -21,7 +22,7 @@ export CUDA_VISIBLE_DEVICES=0
 cd /home/cse/btech/cs1230848/HPC-IIT-Delhi
 python3 iitdproxy.py proxyAuth.txt &
 
-BASE=/home/cse/btech/cs1230848/NLP_A3
+BASE=/home/cse/btech/cs1230848/NLP_A3/sub
 
 # Install sklearn into the vllm env if not already present (eval.py needs it)
 pip install -q scikit-learn
@@ -36,24 +37,20 @@ OUTDIR=./output
 mkdir -p "$OUTDIR"
 
 echo "====== Q3 ICL Inference ======"
-# English: valid.jsonl is separate from the English demo pool — no leakage
-python -u infer2.py --lang en  --test_file "$BASE/en_sft_dataset/valid.jsonl" --output_dir "$OUTDIR"
-# Indic: --holdout_eval splits train 80/20; 80% goes into demo pool, 20% used as test
-# This avoids testing on data that is itself a demo — saves holdout_ref_{lang}.jsonl for eval
-python -u infer2.py --lang hi  --output_dir "$OUTDIR" --holdout_eval
-python -u infer2.py --lang kn  --output_dir "$OUTDIR" --holdout_eval
-python -u infer2.py --lang or  --output_dir "$OUTDIR" --holdout_eval
-python -u infer2.py --lang tcy --output_dir "$OUTDIR" --holdout_eval
+bash infer.sh en  "$BASE/en_sft_dataset/valid.jsonl"    "$OUTDIR"
+bash infer.sh hi  "$BASE/sft_dataset/hi_train.jsonl"    "$OUTDIR"
+bash infer.sh kn  "$BASE/sft_dataset/kn_train.jsonl"    "$OUTDIR"
+bash infer.sh or  "$BASE/sft_dataset/or_train.jsonl"    "$OUTDIR"
+bash infer.sh tcy "$BASE/sft_dataset/tcy_val.jsonl"     "$OUTDIR"
 
 echo "====== Validate Q3 ======"
 python -u "$BASE/validate_output.py" "$OUTDIR/Q3_en.jsonl" "$OUTDIR/Q3_hi.jsonl" "$OUTDIR/Q3_kn.jsonl" "$OUTDIR/Q3_or.jsonl" "$OUTDIR/Q3_tcy.jsonl"
 
 echo "====== Evaluation Q3 ======"
 python -u "$BASE/eval.py" "$OUTDIR/Q3_en.jsonl"  "$BASE/en_sft_dataset/valid.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/Q3_hi.jsonl"  "$OUTDIR/holdout_ref_hi.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/Q3_kn.jsonl"  "$OUTDIR/holdout_ref_kn.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/Q3_or.jsonl"  "$OUTDIR/holdout_ref_or.jsonl"
-python -u "$BASE/eval.py" "$OUTDIR/Q3_tcy.jsonl" "$OUTDIR/holdout_ref_tcy.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_hi.jsonl"  "$BASE/sft_dataset/hi_train.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_kn.jsonl"  "$BASE/sft_dataset/kn_train.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_or.jsonl"  "$BASE/sft_dataset/or_train.jsonl"
+python -u "$BASE/eval.py" "$OUTDIR/Q3_tcy.jsonl" "$BASE/sft_dataset/tcy_val.jsonl"
 
 echo "====== Q3 Done ======"
-
