@@ -259,8 +259,13 @@ def main():
     print(f"[prompts] built {len(prompts)} prompts")
     print(f"[prompts] sample:\n{prompts[0][:800]}...\n")
 
+    if hasattr(retriever, "embedder"):
+        del retriever.embedder
+    import gc; gc.collect()
+    import torch; torch.cuda.empty_cache()
+
     print("[vllm] loading model...")
-    llm = LLM(model=model_name, dtype="float16", trust_remote_code=True, max_model_len=8192)
+    llm = LLM(model=model_name, dtype="float16", trust_remote_code=True, max_model_len=8192,gpu_memory_utilization=0.70)
 
     # Guided decoding: constrains vLLM to output exactly one of the 24 valid labels.
     # Eliminates label-snapping errors entirely — model cannot produce an invalid string.
